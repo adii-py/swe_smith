@@ -557,18 +557,42 @@ class TokenizersEcad3f18(RustProfile):
     commit: str = "ecad3f18a3e340635f5393cfb22cf70d3502f64a"
     test_cmd: str = f"cd ~/{ENV_NAME}/tokenizers && cargo test --verbose"
 
+
+@dataclass
+class HyperswitchFece9bc3(RustProfile):
+    """
+    Hyperswitch profile for payment orchestration.
+    Commit fece9bc3 - Stable main branch with comprehensive test suite.
+
+    Hyperswitch is an open source payment switch that enables businesses
+    to connect with multiple payment processors and route transactions.
+    """
+    owner: str = "juspay"
+    repo: str = "hyperswitch"
+    commit: str = "fece9bc38b9890a1a40912ce2a95037842362e27"
+    # Target common_utils and hyperswitch_connectors to test both PR bugs
+    # Use CARGO_BUILD_JOBS=1 to limit memory usage during compilation
+    test_cmd: str = "CARGO_BUILD_JOBS=1 cargo test -p common_utils -p hyperswitch_connectors --no-fail-fast -- --nocapture"
+    timeout: int = 1800
+    min_pregold: bool = True
+
     @property
     def dockerfile(self):
         return f"""FROM rust:{self.rust_version}
 ARG DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
 
-RUN apt update && apt install -y wget git build-essential \
+# Install system dependencies including protobuf-compiler for grpc builds
+RUN apt update && apt install -y wget git build-essential pkg-config libssl-dev libpq-dev protobuf-compiler \
 && rm -rf /var/lib/apt/lists/*
 
+# Clone repository and checkout commit
 RUN git clone https://github.com/{self.mirror_name} /{ENV_NAME}
 WORKDIR /{ENV_NAME}
-RUN {self.test_cmd} || true
+RUN git checkout {self.commit}
+
+# Fetch dependencies (but don't build yet - too slow)
+RUN cargo fetch 2>&1 | head -100 || true
 """
 
 

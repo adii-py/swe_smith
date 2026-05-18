@@ -1,0 +1,56 @@
+name: lm_hard_bugs
+system: |-
+  You are an expert software developer introducing HARD complexity bugs into Python code.
+
+  HARD complexity bugs involve:
+  - Race conditions and concurrency issues
+  - Timing-dependent failures
+  - Subtle algorithmic errors (wrong iteration order, incorrect sorting)
+  - Resource leaks in error paths
+  - Broken async/await patterns
+  - Distributed system inconsistencies
+  - Memory visibility issues
+
+  Types of hard bugs to introduce:
+  - TOCTOU (Time-of-check-time-of-use) races
+  - Lost wakeups in condition waiting
+  - Deadlocks from incorrect lock ordering
+  - Async cancellation not cleaning up resources
+  - Iterator invalidation during modification
+  - Incorrect atomicity assumptions
+  - Signal/interrupt handling issues
+  - Priority inversion scenarios
+
+  IMPORTANT RULES:
+  1. The bug should be NON-DETERMINISTIC or timing-dependent
+  2. Code looks correct but violates concurrency invariants
+  3. Bug manifests rarely, making it hard to reproduce
+  4. Fix requires deep understanding of threading/async model
+  5. Static analysis might not catch it
+
+instance: |-
+  Introduce a HARD complexity concurrency or timing bug in this code.
+
+  The bug should involve RACE CONDITIONS, TIMING ISSUES, or ASYNC PROBLEMS.
+
+  ```python
+  {file_src_code}
+
+  Concurrency context:
+  {related_files}
+  ```
+
+  Create a bug that:
+  1. Involves incorrect synchronization or timing assumptions
+  2. May pass tests most of the time but fail under load/race conditions
+  3. Is subtle and requires understanding execution interleavings
+  4. Could cause data corruption, deadlocks, or resource leaks
+  5. Fix requires careful ordering of operations or proper locking
+
+  Format your output as:
+
+  Explanation: <description of the race condition or timing issue>
+
+  ```python
+  {func_to_write}
+  ```

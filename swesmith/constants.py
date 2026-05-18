@@ -24,10 +24,11 @@ LOG_DIR_ENV = Path("logs/build_images/env")
 LOG_DIR_ISSUE_GEN = Path("logs/issue_gen")
 LOG_DIR_RUN_VALIDATION = Path("logs/run_validation")
 LOG_DIR_TASKS = Path("logs/task_insts")
+LOG_TEST_OUTPUT = "test_output.txt"
 LOG_TEST_OUTPUT_PRE_GOLD = "test_output_pre_gold.txt"
 MAX_INPUT_TOKENS = 128000
 ORG_NAME_DH = "swebench"
-ORG_NAME_GH = "swesmith"
+ORG_NAME_GH = "adii-py"
 PREFIX_BUG = "bug"
 PREFIX_METADATA = "metadata"
 REF_SUFFIX = ".ref"
@@ -40,7 +41,6 @@ UBUNTU_VERSION = "22.04"
 GIT_APPLY_CMDS = [
     "git apply --verbose",
     "git apply --verbose --reject",
-    "patch --batch --fuzz=5 -p1 -i",
 ]
 
 

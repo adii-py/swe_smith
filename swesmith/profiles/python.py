@@ -1348,6 +1348,162 @@ class String2Stringc4a72f59(PythonProfile):
     )
 
 
+@dataclass
+class Vllm3e1ad443(PythonProfile):
+    """
+    VLLM profile for efficient LLM inference serving.
+    Commit 3e1ad443 (v0.20.2rc0) - Verified stable with CUDA 12.1
+
+    VLLM is a high-throughput and memory-efficient inference engine for LLMs.
+    Requires CUDA support for GPU operations.
+
+    Test markers available:
+    - slow_test: Slow tests (excluded by default)
+    - core_model: Essential model tests for PR validation
+    - cpu_model: CPU-specific model tests
+    - cpu_test: CPU-only tests (can run without GPU)
+    - distributed: Multi-GPU distributed tests
+    - optional: Optional tests (skipped by default)
+    - skip_global_cleanup: Skip global cleanup after tests
+    - hybrid_model: Models with mamba layers
+    """
+    owner: str = "vllm-project"
+    repo: str = "vllm"
+    commit: str = "3e1ad443"
+    python_version: str = "3.12"
+
+    def get_test_files(self, instance: dict) -> tuple[list[str], list[str]]:
+        """
+        Override to convert module paths (e.g., 'tests.test_41181') to file paths
+        (e.g., 'tests/test_41181.py') for pytest compatibility.
+        """
+        from swebench.harness.constants import FAIL_TO_PASS, PASS_TO_PASS, KEY_INSTANCE_ID
+
+        assert FAIL_TO_PASS in instance and PASS_TO_PASS in instance, (
+            f"Instance {instance[KEY_INSTANCE_ID]} missing required keys {FAIL_TO_PASS} or {PASS_TO_PASS}"
+        )
+
+        def _convert_to_file_path(test_name: str) -> str:
+            """Convert module path to file path."""
+            # Extract the module path part (before :: if present)
+            module_path = test_name.split("::", 1)[0]
+            # Convert dots to slashes and add .py extension
+            if "." in module_path and not module_path.endswith(".py"):
+                return module_path.replace(".", "/") + ".py"
+            return module_path
+
+        _helper = lambda tests: sorted(list(set([_convert_to_file_path(x) for x in tests])))
+        return _helper(instance[FAIL_TO_PASS]), _helper(instance[PASS_TO_PASS])
+
+    # Core dependencies installation
+    install_cmds: list = field(
+        default_factory=lambda: [
+            # Upgrade pip and install build tools
+            "python -m pip install --upgrade pip setuptools wheel",
+            # Install PyTorch with CUDA support (matching vLLM requirements)
+            "pip install torch==2.11.0 torchaudio==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu121",
+            # Install additional dependencies needed for tests
+            "pip install lm_eval einops sentencepiece transformers numpy",
+            # Build and install vLLM from source (needed for C extensions)
+            "pip install -r requirements/build.txt",
+            "pip install -r requirements/cuda.txt || true",
+            # Build vLLM with proper C extensions
+            "python setup.py build_ext --inplace",
+            "pip install -e . --no-build-isolation",
+            # Install test dependencies
+            "pip install pytest pytest-timeout pytest-asyncio",
+            # Verify installation
+            "python -c 'import vllm; print(vllm.__version__)'",
+            "python -c 'import vllm._C; print(\"C extensions loaded\")'",
+        ]
+    )
+
+    # Test command - excludes slow and distributed tests by default
+    # Uses markers to filter tests appropriate for validation
+    # Ignores compile tests that require C extensions to be fully built
+    test_cmd: str = (
+        "python -m pytest -xvs --timeout=300 "
+        "-m 'not slow_test and not distributed' "
+        "--tb=short --color=no "
+        "--ignore=tests/compile "
+        "--ignore=tests/distributed "
+        "--ignore=tests/models "
+        "--ignore=tests/benchmarks "
+        "--ignore=tests/tools"
+    )
+
+    # Extended timeout for model loading and compilation
+    timeout: int = 1800
+
+    # Minimum requirements for testing
+    min_pregold: bool = True
+    min_testing: bool = True
+
+    @property
+    def dockerfile(self):
+        """
+        Custom Dockerfile with CUDA support for VLLM.
+        Uses NVIDIA CUDA base image for GPU compatibility.
+        """
+        return f"""FROM nvidia/cuda:12.1-devel-ubuntu22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=${{CUDA_HOME}}/bin:${{PATH}}
+ENV LD_LIBRARY_PATH=${{CUDA_HOME}}/lib64:${{LD_LIBRARY_PATH}}
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \\
+    python3.12 python3-pip python3-venv \\
+    git wget build-essential cmake ninja-build \\
+    && rm -rf /var/lib/apt/lists/*
+
+# Set Python 3.12 as default
+RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1
+RUN update-alternatives --install /usr/bin/pip pip /usr/bin/pip3 1
+
+# Upgrade pip
+RUN python -m pip install --upgrade pip setuptools wheel uv
+
+# Clone repository
+RUN git clone {self.mirror_url} /{ENV_NAME}
+WORKDIR /{ENV_NAME}
+RUN git checkout {self.commit}
+
+# Install PyTorch with CUDA
+RUN pip install torch==2.11.0 torchaudio==2.11.0 torchvision==0.26.0 \\
+    --index-url https://download.pytorch.org/whl/cu121
+
+# Install vLLM dependencies and build
+RUN pip install -r requirements/build.txt
+RUN pip install -r requirements/cuda.txt || true
+
+# Install additional test dependencies
+RUN pip install lm_eval einops sentencepiece transformers numpy
+
+# Build and install vLLM from source (needed for C extensions)
+RUN python setup.py build_ext --inplace
+RUN pip install -e . --no-build-isolation
+
+# Install test dependencies
+RUN pip install pytest pytest-timeout pytest-asyncio
+
+# Verify installation
+RUN python -c "import vllm; print(f'vLLM version: {{vllm.__version__}}')"
+
+# Pre-compile/warm up (optional, reduces first test time)
+RUN {self.test_cmd} --collect-only 2>&1 | head -20 || true
+"""
+
+    @property
+    def mirror_url(self) -> str:
+        """Override mirror URL to use the existing GitHub repo name."""
+        return "https://github.com/adii-py/vllm-project__vllm.3e1ad443.git"
+
+
 # Register all Python profiles with the global registry
 for name, obj in list(globals().items()):
     if (

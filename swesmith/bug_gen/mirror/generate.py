@@ -25,6 +25,9 @@ from swesmith.bug_gen.utils import (
     get_patch,
 )
 from swesmith.bug_gen.mirror.prompts import (
+    CHUNKED_DEMO_PROMPT,
+    CHUNKED_RECOVERY_PROMPT,
+    CHUNKED_TASK_PROMPT,
     DEMO_PROMPT,
     RECOVERY_PROMPT,
     TASK_PROMPT,
@@ -41,6 +44,13 @@ from tqdm.auto import tqdm
 from unidiff import PatchSet
 
 load_dotenv()
+
+# Configure litellm for custom endpoint via LITE_LLM vars (always prefer these)
+if os.getenv("LITE_LLM_URL"):
+    os.environ["OPENAI_API_BASE"] = os.getenv("LITE_LLM_URL")
+if os.getenv("LITE_LLM_API_KEY"):
+    os.environ["OPENAI_API_KEY"] = os.getenv("LITE_LLM_API_KEY")
+
 litellm.drop_params = True
 
 logging.basicConfig(level=logging.INFO)
@@ -59,6 +69,9 @@ RECOVER_FAIL = "failed"
 RECOVER_SKIPPED = "skipped"
 RECOVER_SUCCESS = "success"
 
+CHUNK_LINE_THRESHOLD = 800
+CHUNK_WINDOW_SIZE = 400
+
 
 def get_metadata_file_name(pr_num):
     return f"{PREFIX_METADATA}__pr_{pr_num}.json"
@@ -68,7 +81,7 @@ worker_tempdirs = {}
 
 
 def should_attempt_recovery(
-    inst, repo, max_files=8, max_lines=500, max_file_lines=10000
+    inst, repo, max_files=10, max_lines=800, max_file_lines=15000
 ):
     """
     Attempt if the following criteria are met:
@@ -77,10 +90,12 @@ def should_attempt_recovery(
     * No changed file is >max_file_lines lines
     """
     patch = PatchSet(inst[KEY_PATCH])
-    num_py_edited = len([x for x in patch if x.path.endswith(".py")])
-    if num_py_edited == 0:
-        return False, "No Python files changed"
-    if num_py_edited > max_files:
+    # Support both Python and Rust files
+    code_extensions = ('.py', '.rs')
+    num_code_edited = len([x for x in patch if x.path.endswith(code_extensions)])
+    if num_code_edited == 0:
+        return False, "No Python/Rust files changed"
+    if num_code_edited > max_files:
         return False, f"Too many files changed (>{max_files} files)"
     lines_changed = 0
     for file_diff in patch:
@@ -101,6 +116,38 @@ def should_attempt_recovery(
     return True, None
 
 
+def build_chunks(file_lines, file_diff, window_size=CHUNK_WINDOW_SIZE):
+    """Build (start, end, hunks, chunk_text) chunks around each hunk's expected location.
+    Uses hunk.source_start as a rough guide. Merges overlapping windows.
+    Does not require exact context-line matching — tolerates code drift."""
+    raw_chunks = []
+
+    for hunk in file_diff:
+        center = max(0, hunk.source_start - 1)
+        start = max(0, center - window_size // 2)
+        end = min(len(file_lines), center + window_size // 2)
+        raw_chunks.append((start, end, [hunk]))
+
+    # Merge overlapping or adjacent chunks
+    raw_chunks.sort(key=lambda x: x[0])
+    merged = []
+    for start, end, hunks in raw_chunks:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (
+                merged[-1][0],
+                max(merged[-1][1], end),
+                merged[-1][2] + hunks,
+            )
+        else:
+            merged.append((start, end, hunks))
+
+    result = []
+    for start, end, hunks in merged:
+        chunk_text = "\n".join(file_lines[start:end])
+        result.append((start, end, hunks, chunk_text))
+    return result
+
+
 def recover_sweb_inst(inst, repo, model, api_key=None, log_path=None):
     """
     Given a pull request, mirror the bug in the current form of the repository.
@@ -116,13 +163,11 @@ def recover_sweb_inst(inst, repo, model, api_key=None, log_path=None):
     patch = PatchSet(inst[KEY_PATCH])
 
     def extract_output(output):
-        code_block_pat = re.compile(r"^```python\s*\n([\s\S]*)^```\s*$", re.MULTILINE)
-        if code_block_pat.search(output):
-            output = output.split("```python", 1)[1]
-            output = output.rsplit("```", 1)[0]
-            output = output.strip()
-            output = code_block_pat.sub("", output)
-        return output
+        code_block_pat = re.compile(r"^```(?:\w+)?\s*\n([\s\S]*?)^```\s*$", re.MULTILINE)
+        match = code_block_pat.search(output)
+        if match:
+            output = match.group(1)
+        return output.strip()
 
     metadata = {KEY_COST: 0, KEY_REWRITES: {}, KEY_RECOVER_STATUS: RECOVER_SUCCESS}
     for idx, file_diff in enumerate(patch):
@@ -159,40 +204,113 @@ def recover_sweb_inst(inst, repo, model, api_key=None, log_path=None):
                 patch_files.append(patch_path)
             continue
 
-        if not os.path.exists(file_path) or not file_path.endswith(".py"):
-            # Skip over edits to files that don't exist or are not Python files
+        # Support both Python and Rust files
+        code_extensions = ('.py', '.rs')
+        if not os.path.exists(file_path) or not file_path.endswith(code_extensions):
+            # Skip over edits to files that don't exist or are not code files
             continue
         file_content = open(file_path).read()
+        ends_with_newline = file_content.endswith("\n")
+        file_lines = file_content.splitlines()
 
-        # Call llm generation
-        response = completion(
-            model=model,
-            messages=[
-                {"role": "user", "content": RECOVERY_PROMPT},
-                {"role": "user", "content": DEMO_PROMPT},
-                {
-                    "role": "user",
-                    "content": TASK_PROMPT.format(file_content, str(file_diff)),
-                },
-            ],
-            n=1,
-            temperature=0,
-            api_key=api_key,
-        )
+        use_chunking = len(file_lines) > CHUNK_LINE_THRESHOLD
+        if use_chunking:
+            chunks = build_chunks(file_lines, file_diff, window_size=CHUNK_WINDOW_SIZE)
+            if chunks is None:
+                use_chunking = False
 
-        # Perform rewrite
-        cost = completion_cost(completion_response=response)
-        metadata[KEY_COST] += cost
-        metadata[INSTANCE_REF] = inst
-        output = response.choices[0].message.content.strip()  # type: ignore
-        output_extracted = extract_output(output)
-        metadata[KEY_REWRITES][file_path] = {
-            "output": output,
-            "output_extracted": output_extracted,
-            KEY_COST: cost,
-        }
-        with open(file_path, "w") as f:
-            f.write(output_extracted)
+        if use_chunking:
+            chunk_outputs = []
+            for chunk_start, chunk_end, hunks, chunk_text in reversed(chunks):
+                hunk_text = "\n".join(str(h) for h in hunks)
+                response = completion(
+                    model=model,
+                    messages=[
+                        {"role": "user", "content": CHUNKED_RECOVERY_PROMPT},
+                        {"role": "user", "content": CHUNKED_DEMO_PROMPT},
+                        {
+                            "role": "user",
+                            "content": CHUNKED_TASK_PROMPT.format(
+                                chunk_text, hunk_text
+                            ),
+                        },
+                    ],
+                    n=1,
+                    temperature=0,
+                    api_key=api_key,
+                    timeout=600,
+                    max_retries=2,
+                )
+                try:
+                    cost = completion_cost(completion_response=response)
+                except Exception as e:
+                    logger.warning(
+                        f"Could not calculate cost for model {model}: {e}"
+                    )
+                    cost = 0
+                metadata[KEY_COST] += cost
+                output = response.choices[0].message.content.strip()
+                output_extracted = extract_output(output)
+                chunk_outputs.append(
+                    {
+                        "chunk_start": chunk_start,
+                        "chunk_end": chunk_end,
+                        "output": output,
+                        "output_extracted": output_extracted,
+                        KEY_COST: cost,
+                    }
+                )
+                new_lines = output_extracted.splitlines()
+                file_lines = (
+                    file_lines[:chunk_start] + new_lines + file_lines[chunk_end:]
+                )
+
+            new_content = "\n".join(file_lines)
+            if ends_with_newline:
+                new_content += "\n"
+            with open(file_path, "w") as f:
+                f.write(new_content)
+            metadata[KEY_REWRITES][file_path] = {
+                "chunked": True,
+                "chunks": chunk_outputs,
+            }
+        else:
+            response = completion(
+                model=model,
+                messages=[
+                    {"role": "user", "content": RECOVERY_PROMPT},
+                    {"role": "user", "content": DEMO_PROMPT},
+                    {
+                        "role": "user",
+                        "content": TASK_PROMPT.format(
+                            file_content, str(file_diff)
+                        ),
+                    },
+                ],
+                n=1,
+                temperature=0,
+                api_key=api_key,
+                timeout=600,
+                max_retries=2,
+            )
+            try:
+                cost = completion_cost(completion_response=response)
+            except Exception as e:
+                logger.warning(
+                    f"Could not calculate cost for model {model}: {e}"
+                )
+                cost = 0
+            metadata[KEY_COST] += cost
+            metadata[INSTANCE_REF] = inst
+            output = response.choices[0].message.content.strip()  # type: ignore
+            output_extracted = extract_output(output)
+            metadata[KEY_REWRITES][file_path] = {
+                "output": output,
+                "output_extracted": output_extracted,
+                KEY_COST: cost,
+            }
+            with open(file_path, "w") as f:
+                f.write(output_extracted)
 
         # Get patch from codebase
         try:
@@ -311,7 +429,7 @@ def process_single_instance(
         )
 
         if len(patch_files) == 0:
-            return {"status": "recover_fail"}
+            return "recover_fail"
         else:
             patch_merged = apply_patches(repo, patch_files)
             if patch_merged:
@@ -322,9 +440,23 @@ def process_single_instance(
                 return "recover_success"
             else:
                 return "recover_fail"
+
     except Exception as e:
         logger.error(f"Error processing instance {inst[KEY_INSTANCE_ID]}: {e}")
         logger.error(traceback.format_exc())
+        try:
+            if 'metadata_file' in locals() and metadata_file is not None:
+                with open(metadata_file, "w") as f:
+                    json.dump(
+                        {
+                            KEY_RECOVER_STATUS: RECOVER_FAIL,
+                            "error": str(e),
+                        },
+                        f,
+                        indent=4,
+                    )
+        except Exception:
+            pass
         return "recover_fail"
     finally:
         os.chdir(original_dir)

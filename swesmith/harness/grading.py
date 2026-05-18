@@ -19,6 +19,8 @@ from swesmith.profiles import registry
 
 
 def read_test_output(filename: str):
+    if not Path(filename).exists():
+        return None, False
     content = Path(filename).read_text(errors="replace")
     if APPLY_PATCH_FAIL in content:
         return None, False

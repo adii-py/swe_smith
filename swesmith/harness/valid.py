@@ -72,12 +72,15 @@ def run_validation(instance: dict) -> dict:
     report_path = valid_folder / instance_id / LOG_REPORT
 
     if rp.min_pregold:
+        # Apply only test_patch in pre-gold so tests exist in gold state
+        test_patch_only = instance.get("test_patch")
         ref_inst_id = f"{instance[KEY_INSTANCE_ID]}{REF_SUFFIX}"
         logger, timed_out = run_patch_in_container(
             {**instance, KEY_INSTANCE_ID: ref_inst_id},
             instance["repo"],
             LOG_DIR_RUN_VALIDATION,
             rp.timeout,
+            patch=test_patch_only if test_patch_only else None,
         )
         close_logger(logger)
         if timed_out:
@@ -87,24 +90,38 @@ def run_validation(instance: dict) -> dict:
                 f.write(
                     json.dumps({KEY_TIMED_OUT: True, "timeout": rp.timeout}, indent=4)
                 )
-            shutil.rmtree(valid_folder / ref_inst_id)
+            if (valid_folder / ref_inst_id).exists():
+                shutil.rmtree(valid_folder / ref_inst_id)
             return {"status": "timeout"}
 
         # Copy pre-gold test output to the post-gold folder and remove the pre-gold folder
         val_postgold_path = valid_folder / instance_id / LOG_TEST_OUTPUT_PRE_GOLD
         val_postgold_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy(
-            valid_folder / ref_inst_id / LOG_TEST_OUTPUT,
-            val_postgold_path,
-        )
-        shutil.rmtree(valid_folder / ref_inst_id)
+        ref_test_output = valid_folder / ref_inst_id / LOG_TEST_OUTPUT
+        if ref_test_output.exists():
+            shutil.copy(ref_test_output, val_postgold_path)
+        if (valid_folder / ref_inst_id).exists():
+            shutil.rmtree(valid_folder / ref_inst_id)
+
+    # Apply test patch first (if exists), then bug patch
+    test_patch = instance.get("test_patch")
+    bug_patch = instance[KEY_PATCH]
+
+    # Combine patches: test patch first, then bug patch
+    combined_patch = None
+    if test_patch and bug_patch:
+        combined_patch = test_patch + "\n" + bug_patch
+    elif bug_patch:
+        combined_patch = bug_patch
+    elif test_patch:
+        combined_patch = test_patch
 
     logger, timed_out = run_patch_in_container(
         instance,
         instance["repo"],
         LOG_DIR_RUN_VALIDATION,
         rp.timeout,
-        patch=instance[KEY_PATCH],
+        patch=combined_patch,
     )
 
     if timed_out:
@@ -164,13 +181,14 @@ def main(
     bug_patches = [
         {
             **x,
-            KEY_PATCH: x.get(KEY_PATCH, x.get(KEY_PREDICTION)),
+            KEY_PATCH: x.get(KEY_PATCH, x.get(KEY_PREDICTION, x.get("bug_patch"))),
         }
         for x in bug_patches
     ]
     print(f"Found {len(bug_patches)} candidate patches.")
 
     completed = []
+    log_dir_parent = None
     for repo in set([bp["repo"] for bp in bug_patches]):
         log_dir_parent = LOG_DIR_RUN_VALIDATION / repo
         log_dir_parent.mkdir(parents=True, exist_ok=True)
@@ -225,7 +243,8 @@ def main(
     # Check if we have any payloads to process
     if len(payloads) == 0:
         print("No patches to run.")
-        print_report(log_dir_parent)
+        if log_dir_parent:
+            print_report(log_dir_parent)
         return
 
     # Initialize progress bar and stats

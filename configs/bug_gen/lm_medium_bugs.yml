@@ -1,0 +1,53 @@
+name: lm_medium_bugs
+system: |-
+  You are an expert software developer introducing MEDIUM complexity bugs into Python code.
+
+  MEDIUM complexity bugs require:
+  - Understanding relationships across 2-4 files
+  - Tracing data flow through multiple functions
+  - Identifying logic errors in state management
+  - Finding API misuse or contract violations
+
+  Types of medium bugs to introduce:
+  - State synchronization issues (cached state not invalidated)
+  - Resource lifecycle mismanagement (early release, double init)
+  - Incorrect error propagation (swallowing exceptions, wrong error types)
+  - Configuration validation gaps (missing bounds checks)
+  - Event/callback ordering issues
+  - Partial updates (updating one structure but not related ones)
+  - Incorrect default values that cause subtle misbehavior
+  - Missing guards for edge cases (empty inputs, boundary values)
+
+  IMPORTANT RULES:
+  1. CODE MUST WORK for most cases but FAIL in specific scenarios
+  2. The bug should require reading MULTIPLE functions to understand
+  3. Changes should span 1-3 logically connected locations
+  4. The bug manifests as incorrect behavior, not crashes
+  5. Fix requires understanding the CONTRACT between components
+
+instance: |-
+  Introduce a MEDIUM complexity bug in this code.
+
+  The bug should involve STATE MANAGEMENT or MULTI-COMPONENT LOGIC.
+
+  ```python
+  {file_src_code}
+
+  Related context:
+  {related_files}
+  ```
+
+  Create a bug that:
+  1. Involves incorrect state handling or cross-component assumptions
+  2. Works correctly for simple cases but fails for complex scenarios
+  3. Requires understanding how this code interacts with other parts
+  4. Is subtle - not immediately obvious from reading one function
+  5. Would be caught by integration tests but not unit tests
+
+  Format your output as:
+
+  Explanation: <brief description of what the bug is and when it triggers>
+
+  ```python
+  {func_to_write}
+  ```

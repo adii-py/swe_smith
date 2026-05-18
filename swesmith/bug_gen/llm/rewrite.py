@@ -27,7 +27,9 @@ from litellm import completion
 from litellm.cost_calculator import completion_cost
 from swesmith.bug_gen.llm.utils import (
     PROMPT_KEYS,
+    check_indentation_consistency,
     extract_code_block,
+    validate_python_syntax,
 )
 from swesmith.bug_gen.utils import (
     apply_code_change,
@@ -133,6 +135,18 @@ def main(
         code_block = extract_code_block(message.content)
         explanation = message.content.split("```", 1)[0].strip()
 
+        # Validate the generated code
+        is_valid, error_msg = validate_python_syntax(code_block)
+        if not is_valid:
+            print(f"  Invalid syntax for {candidate.name}: {error_msg}")
+            return {"n_generation_failed": 1, "cost": 0.0}
+
+        # Check indentation consistency
+        is_consistent, indent_error = check_indentation_consistency(code_block)
+        if not is_consistent:
+            print(f"  Bad indentation for {candidate.name}: {indent_error}")
+            return {"n_generation_failed": 1, "cost": 0.0}
+
         subprocess.run(
             f"cd {repo}; git reset --hard",
             shell=True,
@@ -140,7 +154,10 @@ def main(
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        cost = completion_cost(completion_response=response)
+        try:
+            cost = completion_cost(completion_response=response)
+        except Exception:
+            cost = 0.0  # Unknown model cost
         rewrite = BugRewrite(
             rewrite=code_block,
             explanation=explanation,
@@ -149,9 +166,36 @@ def main(
             output=message.content,
         )
         apply_code_change(candidate, rewrite)
+
+        # CRITICAL: Validate the actual file has valid syntax after applying the change
+        try:
+            with open(candidate.file_path, 'r') as f:
+                patched_content = f.read()
+            ast.parse(patched_content)
+        except SyntaxError as e:
+            print(f"  Syntax error in patched file for {candidate.name}: {e}")
+            subprocess.run(
+                f"cd {repo}; git reset --hard",
+                shell=True,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return {"n_generation_failed": 1, "cost": cost}
+
         patch = get_patch(repo, reset_changes=True)
         if not patch or len(patch.strip()) == 0:
             return {"n_generation_failed": 0, "cost": cost}
+
+        # Validate the patch can be applied cleanly
+        if patch.count('\n+') == 0 and patch.count('\n-') == 0:
+            print(f"  No changes in patch for {candidate.name}")
+            return {"n_generation_failed": 0, "cost": cost}
+
+        # Check for common patch format issues
+        if '+-' in patch or '-+' in patch:
+            print(f"  Malformed patch markers for {candidate.name}")
+            return {"n_generation_failed": 1, "cost": cost}
 
         # Log the bug
         bug_dir.mkdir(parents=True, exist_ok=True)

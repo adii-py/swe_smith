@@ -17,7 +17,6 @@ python -m swesmith.bug_gen.llm.modify tkrajina__gpxpy.09fc46b3 --config_file con
 import argparse
 import dataclasses
 import shutil
-import jinja2
 import json
 import litellm
 import logging
@@ -29,6 +28,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from litellm import completion
 from litellm.cost_calculator import completion_cost
+from litellm.exceptions import BadRequestError
 from swesmith.bug_gen.llm.utils import PROMPT_KEYS, extract_code_block
 from swesmith.bug_gen.utils import (
     apply_code_change,
@@ -64,21 +64,24 @@ def gen_bug_from_code_lm(
     def format_prompt(prompt: str | None, config: dict, candidate: CodeEntity) -> str:
         if not prompt:
             return ""
-        env = jinja2.Environment()
 
-        def jinja_shuffle(seq):
-            result = list(seq)
-            random.shuffle(result)
-            return result
-
-        env.filters["shuffle"] = jinja_shuffle
-        template = env.from_string(prompt)
-
-        candidate_dict = {
+        prompt_content = {
             field.name: getattr(candidate, field.name)
             for field in dataclasses.fields(candidate)
         }
-        return template.render(**candidate_dict, **config.get("parameters", {}))
+        # Add commonly used properties that may exist on the candidate
+        for attr in ["name", "signature", "stub"]:
+            if hasattr(candidate, attr):
+                prompt_content[attr] = getattr(candidate, attr)
+        # Add file_src_code (full file content) for templates that need it
+        try:
+            file_path = os.path.join(os.getcwd(), candidate.file_path)
+            with open(file_path) as f:
+                prompt_content["file_src_code"] = f.read()
+        except Exception:
+            prompt_content["file_src_code"] = candidate.src_code
+
+        return prompt.format(**prompt_content, **config.get("parameters", {}))
 
     def get_role(key: str) -> str:
         if key == "system":
@@ -92,7 +95,25 @@ def gen_bug_from_code_lm(
     ]
     # Remove empty messages
     messages = [x for x in messages if x["content"]]
-    response: Any = completion(model=model, messages=messages, n=n_bugs, temperature=1)
+    # Use litellm config from environment
+    api_key = os.getenv("LITE_LLM_API_KEY", os.getenv("OPENAI_API_KEY"))
+    api_base = os.getenv("LITE_LLM_URL", os.getenv("OPENAI_API_BASE"))
+
+    response: Any = completion(
+        model=model,
+        messages=messages,
+        n=n_bugs,
+        temperature=1,
+        api_key=api_key,
+        base_url=api_base,
+    )
+    # Calculate cost with fallback for unknown models
+    try:
+        total_cost = completion_cost(completion_response=response)
+    except Exception:
+        # Model not in litellm's known models, estimate cost
+        total_cost = 0.0
+
     for choice in response.choices:
         message = choice.message
         explanation = (
@@ -104,7 +125,7 @@ def gen_bug_from_code_lm(
             BugRewrite(
                 rewrite=extract_code_block(message.content),
                 explanation=explanation,
-                cost=completion_cost(completion_response=response) / n_bugs,
+                cost=total_cost / n_bugs,
                 output=message.content,
                 strategy="llm",
             )
@@ -139,6 +160,45 @@ def main(
         print(f"No candidates found in {repo}.")
         return
 
+    # Filter for runtime Python files (no GPU/build required)
+    RUNTIME_PATTERNS = [
+        'vllm/config/', 'vllm/utils.py', 'vllm/sequence.py',
+        'vllm/sampling_params.py', 'vllm/engine/arg_utils.py',
+        'vllm/attention/', 'vllm/model_executor/layers/',
+        'vllm/transformers_utils/', 'vllm/usage/'
+    ]
+    BUILD_PATTERNS = ['setup.py', 'cmake', 'tools/', 'benchmarks/', 'tests/']
+
+    original_count = len(candidates)
+    candidates = [
+        c for c in candidates
+        if hasattr(c, 'complexity') and c.complexity > 5
+        and any(pat in c.file_path for pat in RUNTIME_PATTERNS)
+        and not any(pat in c.file_path for pat in BUILD_PATTERNS)
+    ]
+    print(f"Filtered to {len(candidates)} runtime functions (complexity > 5) from {original_count}")
+
+    # Shuffle candidates for file diversity before limiting
+    import random
+    random.seed(42)  # For reproducibility
+    random.shuffle(candidates)
+
+    # Ensure file diversity - track files we've selected from
+    if max_bugs > 0:
+        diverse_candidates = []
+        seen_files = set()
+        # First pass: pick one from each file until we have enough
+        for c in candidates:
+            if c.file_path not in seen_files and len(diverse_candidates) < max_bugs:
+                diverse_candidates.append(c)
+                seen_files.add(c.file_path)
+        # Second pass: fill remaining slots
+        for c in candidates:
+            if len(diverse_candidates) < max_bugs:
+                diverse_candidates.append(c)
+        candidates = diverse_candidates
+        print(f"Selected {len(candidates)} candidates from {len(seen_files)} different files for diversity")
+
     # Adjust candidates if max_bugs is specified
     if max_bugs > 0:
         max_candidates = max_bugs // n_bugs
@@ -157,7 +217,48 @@ def main(
     log_dir.mkdir(parents=True, exist_ok=True)
     print(f"Logging bugs to {log_dir}")
 
+    def validate_bug_challenging(patch: str) -> bool:
+        """Ensure bug is non-trivial and challenging"""
+        if not patch:
+            return False
+
+        # Count changed lines (added + removed)
+        diff_lines = patch.count('\n+') + patch.count('\n-')
+
+        # Too small = trivial (1-2 line changes), too big = rewrite
+        if not (3 <= diff_lines <= 20):
+            return False
+
+        # Must change control flow or data flow
+        control_flow_ops = ['if ', 'for ', 'while ', 'try:', 'return ', 'yield ', 'raise ', 'except']
+        if not any(op in patch for op in control_flow_ops):
+            return False
+
+        return True
+
     def _process_candidate(candidate: CodeEntity):
+        # Track which line ranges have been modified (for deduplication)
+        modified_ranges: list[tuple[int, int]] = []
+
+        def get_patch_line_range(patch: str) -> tuple[int, int] | None:
+            """Extract the line range modified by a patch"""
+            # Parse @@ -start,count +start,count @@ lines
+            import re
+            matches = re.findall(r'@@ -(\d+),(\d+) \+(\d+),(\d+) @@', patch)
+            if matches:
+                # Return the start line of the first hunk
+                start = int(matches[0][2])  # New file start line
+                return (start, start + int(matches[0][3]))
+            return None
+
+        def overlaps_existing(new_range: tuple[int, int]) -> bool:
+            """Check if new range overlaps with any existing modified range"""
+            for existing in modified_ranges:
+                # Check for overlap: [a1, a2] overlaps with [b1, b2] if not (a2 < b1 or a1 > b2)
+                if not (new_range[1] < existing[0] or new_range[0] > existing[1]):
+                    return True
+            return False
+
         # Run bug generation
         bugs = gen_bug_from_code_lm(candidate, configs, n_bugs, model)
         cost, n_bugs_generated, n_generation_failed = sum([x.cost for x in bugs]), 0, 0
@@ -177,6 +278,15 @@ def main(
                 patch = get_patch(repo, reset_changes=True)
                 if not patch:
                     raise ValueError("Patch is empty.")
+                # Validate bug is challenging
+                if not validate_bug_challenging(patch):
+                    raise ValueError("Bug not challenging enough (too trivial or too large).")
+                # Check for line range overlap with existing bugs for this candidate
+                patch_range = get_patch_line_range(patch)
+                if patch_range and overlaps_existing(patch_range):
+                    raise ValueError(f"Bug overlaps with existing bug on lines {patch_range}.")
+                if patch_range:
+                    modified_ranges.append(patch_range)
                 with open(bug_dir / bug_path, "w") as f:
                     f.write(patch)
             except Exception as e:

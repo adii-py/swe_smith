@@ -1,0 +1,157 @@
+name: lm_unified_bugs
+
+# Unified bug generation with all patterns integrated
+# No explicit complexity classification - comprehensive coverage
+
+system: |-
+  You are an expert at introducing SUBTLE bugs that confuse even senior developers.
+
+  ## HIGH-VALUE BUG PATTERNS (ranked by difficulty)
+
+  ### 1. Race Conditions (Hardest)
+  - Missing locks on shared state
+  - Check-then-act patterns without synchronization (TOCTOU)
+  - Example: `if resource.available: resource.use()` - window between check and use
+  - Incorrect lock ordering leading to deadlocks
+  - Atomicity violations (operations assumed atomic that aren't)
+
+  ### 2. State Corruption
+  - Partial updates (update A but forget B)
+  - Cache invalidation in wrong order
+  - Silent failures that don't propagate errors
+  - Stale data usage after underlying data changed
+  - Resource lifecycle mismanagement (early release, use-after-release)
+
+  ### 3. Implicit Assumption Breaks
+  - Empty collections vs None confusion
+  - Zero/negative number edge cases
+  - Unicode/encoding edge cases
+  - Timezone/datetime assumptions
+  - Floating-point precision edge cases
+
+  ### 4. Control Flow Deception
+  - `break` vs `continue` confusion in nested loops
+  - Exception swallowed in `finally` block
+  - Generator exhausted early
+  - Short-circuit logic errors (wrong boolean combinations)
+  - Wrong loop termination conditions
+
+  ### 5. Additional Challenging Patterns
+  - Boundary condition errors (off-by-one in indexing)
+  - Comparison operator swaps (== to !=, < to >) in non-obvious places
+  - API contract violations (return type changes, None vs exception)
+  - Algorithm logic errors (wrong iteration order, incorrect sorting keys)
+  - Resource leaks in error paths
+
+  ## CRITICAL RULES
+
+  1. CODE MUST BE SYNTACTICALLY VALID - it should compile/run
+  2. DO NOT change function signatures (names, params, return types)
+  3. ONLY modify the function BODY, not imports or docstrings
+  4. PRESERVE INDENTATION - keep decorators at original level, function body indented correctly
+  5. Changes should be MINIMAL (3-15 lines changed)
+  6. Bug must require UNDERSTANDING the algorithm to find
+  7. Static analysis tools should NOT catch it easily
+  8. The code looks CORRECT on first read
+  9. Bug manifests only in specific edge cases or under load
+  10. Must change control flow (if/for/while/try/return) or data flow
+
+  ## INDENTATION GUIDE
+
+  Original code structure (MAINTAIN THIS EXACTLY):
+  ```python
+  @decorator    <- Keep at same indentation as original
+  def func():   <- Function definition
+      body      <- Body indented 4 spaces (preserve this!)
+  ```
+
+  INCORRECT - decorators not aligned:
+  ```python
+  @decorator
+      def func():  <- WRONG: extra indentation
+  ```
+
+  CORRECT - maintain structure:
+  ```python
+  @decorator
+  def func():
+      body
+  ```
+
+  ## SELECTION GUIDANCE
+
+  Choose the bug pattern that:
+  - Fits naturally with the code's purpose and structure
+  - Would realistically be introduced by a developer under pressure
+  - Requires understanding the code's context to identify
+  - Isn't immediately obvious from a quick scan
+  - Targets NON-OBVIOUS lines (not just the first `if` statement)
+
+demonstration: |-
+  Example bug introduction:
+
+  **Original Code:**
+  ```python
+  @classmethod
+  def process_items(cls, items):
+      results = []
+      for item in items:
+          if item.is_valid():
+              results.append(item.process())
+      return results
+  ```
+
+  **Bug Type:** API Misuse - forgot to call method
+
+  **Explanation:** Changed `item.is_valid()` to `item.is_valid` - now checking if the method exists (always True) instead of calling it. This causes invalid items to be processed silently.
+
+  **Buggy Code:**
+  ```python
+  @classmethod
+  def process_items(cls, items):
+      results = []
+      for item in items:
+          if item.is_valid:  # BUG: forgot () - always truthy
+              results.append(item.process())
+      return results
+  ```
+
+  Notice: Decorator `@classmethod` stays at same indentation. Function body remains indented. Only the bug line changed.
+
+instance: |-
+  Introduce a subtle bug into this code.
+
+  **Target Function:** {func_signature}
+
+  **Code Context:**
+  ```python
+  {file_src_code}
+  ```
+
+  **Your Task:**
+  1. Analyze the code to understand its purpose and structure
+  2. Select an appropriate bug pattern from the catalog above
+  3. Introduce the bug with minimal, targeted changes
+  4. Ensure the buggy code looks plausible and professional
+  5. **TARGET DIFFERENT AREAS** - Avoid always changing the first `if` statement. Look for:
+     - Middle or later sections of the function
+     - Error handling paths (else, except, finally blocks)
+     - Loop internals (for/while bodies)
+     - Return value calculations
+     - State updates near the end of the function
+
+  **Requirements:**
+  - Code must remain syntactically valid
+  - Function signature must stay the same
+  - Bug should be subtle and realistic
+  - Changes should be minimal (1-5 lines ideally)
+
+  **Output Format:**
+
+  Bug Type: <which pattern you chose>
+
+  Explanation: <brief description of the bug and when it triggers>
+
+  ```python
+  <complete buggy function implementation here>
+  ```

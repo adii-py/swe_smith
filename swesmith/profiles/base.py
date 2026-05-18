@@ -344,9 +344,18 @@ class RepoProfile(ABC, metaclass=SingletonMeta):
         if self.repo_name in os.listdir():
             shutil.rmtree(self.repo_name)
         source_repo = self.api.repos.get(self.owner, self.repo)
-        self.api.repos.create_in_org(
-            self.org_gh, self.repo_name, private=source_repo.private
-        )
+
+        # Try to create in org first, fallback to personal account
+        try:
+            self.api.repos.create_in_org(
+                self.org_gh, self.repo_name, private=source_repo.private
+            )
+        except Exception:
+            # Fallback: create in personal account
+            self.api.repos.create_for_authenticated_user(
+                name=self.repo_name,
+                private=source_repo.private
+            )
 
         # Clone the source repository (READ operation)
         self._configure_ssh_env()
@@ -564,9 +573,19 @@ class RepoProfile(ABC, metaclass=SingletonMeta):
     def get_test_cmd(
         self, instance: dict, f2p_only: bool = False
     ) -> tuple[str, list[Path]]:
-        assert instance[KEY_INSTANCE_ID].rsplit(".", 1)[0] == self.repo_name, (
-            f"WARNING: {instance[KEY_INSTANCE_ID]} not from {self.repo_name}"
-        )
+        # Handle .ref suffix for pre-gold instances
+        instance_id = instance[KEY_INSTANCE_ID]
+        if instance_id.endswith(".ref"):
+            instance_id = instance_id[:-4]  # Strip .ref
+        # For reference instances, instance_id equals repo_name after stripping .ref
+        if instance_id != self.repo_name:
+            assert instance_id.rsplit(".", 1)[0] == self.repo_name, (
+                f"WARNING: {instance[KEY_INSTANCE_ID]} not from {self.repo_name}"
+            )
+        # Use instance-specific test_cmd if provided, otherwise use profile default
+        # If instance has its own test_cmd, use it as-is without appending test files
+        if "test_cmd" in instance:
+            return instance["test_cmd"], []
         test_command = self.test_cmd
 
         if f2p_only:

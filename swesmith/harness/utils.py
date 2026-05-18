@@ -147,7 +147,7 @@ def run_patch_in_container(
             user=DOCKER_USER,
             detach=True,
             command="tail -f /dev/null",
-            platform="linux/x86_64",
+            platform=getattr(rp, 'pltf', 'linux/x86_64'),
             mem_limit="10g",
         )
         container.start()
@@ -173,6 +173,15 @@ def run_patch_in_container(
         # If provided, checkout commit in container
         if commit is not None:
             logger.info(f"Checking out commit {commit}")
+            # Update remote URL to mirror (runtime fix for images with wrong remote)
+            rp = registry.get_from_inst(instance)
+            remote_update = container.exec_run(
+                f"git remote set-url origin {rp.mirror_url}",
+                workdir=DOCKER_WORKDIR,
+                user=DOCKER_USER,
+            )
+            if remote_update.exit_code == 0:
+                logger.info(f"Updated remote to {rp.mirror_url}")
             fetch_val = container.exec_run(
                 "git fetch",
                 workdir=DOCKER_WORKDIR,

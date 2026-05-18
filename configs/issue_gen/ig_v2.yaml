@@ -3,7 +3,7 @@ litellm_model_name_override: openai/gpt-5-mini
 provider: "@openai"
 system: |-
   You are a software engineer helping to create a realistic dataset of synthetic GitHub issues.
-  
+
   You will be given the following input:
 
   1. Demonstration: A realistic GitHub issue to mimic (included in the <demonstration> tag).
@@ -11,21 +11,44 @@ system: |-
   3. Test output: The output of running the tests after the patch is applied (included in the <test_output> tag).
   4. Test source code: Source code for one or more tests that failed (included in the <test_source_code> tag).
 
-  Output: A realistic GitHub issue for the patch.
+  Output: A realistic GitHub issue for the patch that describes ONLY observable symptoms and behaviors.
 
-  Guidelines:
+  CRITICAL GUIDELINES:
 
-  - Mimic the style and structure of the demonstration issues. 
-    If the demonstration issues are not well structured, your output should also be not well structured.
-    If the demonstrations use improper or no markdown, your output should also use improper or no markdown.
-    If the demonstrations are short/long, your output should also be short/long (if possible).
-    If the demonstrations include human "flavor text" or "fluff", your output should also include human "flavor text" or "fluff".
-    Do this even if it conflicts with your default behavior of trying to be extremely concise and helpful.
-  - DO NOT explain the fix/what caused the bug itself, focus on how to reproduce the issue it introduces
-  - Do not mention pytest or what exact test failed. Instead, generate a realistic issue.
-  - If possible, include information about how to reproduce the issue. An ideal reproduction script should raise an error
-    or print an unexpected output together with the expected output.
-    However, still include this information in a style very similar to the demonstration issues.
+  - Describe ONLY observable symptoms and expected behavior. NEVER mention:
+    * File names or file paths
+    * Function names, method names, or class names
+    * Variable names or internal data structures
+    * Implementation details or code-level specifics
+    * The specific lines of code that need changing
+
+  - REQUIRE multi-step reasoning to solve:
+    * Describe symptoms that could have multiple possible causes
+    * Provide indirect clues about the nature of the problem
+    * Force the reader to explore the codebase and understand system behavior
+    * Make the root cause non-obvious from the description alone
+
+  - Include a deterministic reproduction scenario:
+    * Provide exact inputs or configuration that triggers the issue
+    * Describe the sequence of actions that leads to the problem
+    * Include expected vs actual behavior comparison
+
+  - Use subtle indirect clues ONLY:
+    * Hint at the category of functionality affected (e.g., "distributed processing", "memory management")
+    * Reference behavioral patterns without naming specific components
+    * Describe the symptom's characteristics (e.g., "intermittent", "deterministic", "platform-specific")
+
+  - ABSOLUTELY FORBIDDEN (will cause the issue to be rejected):
+    * DO NOT GIVE AWAY THE FIX
+    * DO NOT mention specific source files, modules, or code locations
+    * DO NOT suggest which functions or methods are involved
+    * DO NOT describe the internal algorithm or logic that needs correction
+    * DO NOT say "the bug is in X file" or "Y function needs Z change"
+
+  - DO explain the observable effects and user-visible behaviors
+  - DO describe the impact on system functionality from a user's perspective
+  - DO include enough context for someone to reproduce and investigate
+  - DO mimic the natural style of demonstration issues
 demonstration: |-
   Here are a few realistic GitHub issues that you can mimic.
 
@@ -37,13 +60,17 @@ demonstration: |-
 instance: |-
   Now, write a GitHub issue for the following patch (diff output).
 
-  <IMPORTANT>
+  <CRITICAL REQUIREMENTS>
+  - Describe ONLY observable symptoms and behaviors - NEVER mention file paths, function names, or implementation details
+  - The issue should require multi-step reasoning to understand the root cause
+  - Include subtle indirect clues about the problem domain without giving away the fix
+  - Provide a deterministic reproduction scenario with exact steps
+  - Focus on WHAT is wrong and HOW it manifests, not WHERE in the code
   - DO NOT GIVE AWAY THE FIX! THE SOLUTION CODE SHOULD NEVER APPEAR IN YOUR RESPONSE.
   - DO NOT SAY THAT EXISTING TEST(s) FAILED.
   - DO NOT SUGGEST RUNNING ANY TESTING COMMANDS (e.g., pytest).
-  - Mimic the style and information of the issue text from the demonstration.
-  - Keep the length of the issue text reasonable and similar to the demonstration.
-  </IMPORTANT>
+  - Mimic the natural, human style of the demonstration issues.
+  </CRITICAL REQUIREMENTS>
 
   <patch>
   {{patch}}

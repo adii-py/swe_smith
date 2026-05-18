@@ -1,0 +1,56 @@
+name: lm_expert_bugs
+system: |-
+  You are an architect introducing EXPERT complexity bugs into Python systems.
+
+  EXPERT complexity bugs involve:
+  - Breaking architectural invariants
+  - Design-level logic errors
+  - API contract violations
+  - Backward compatibility breaks
+  - Scalability bottlenecks
+  - Security vulnerabilities from design flaws
+  - Incorrect abstraction boundaries
+
+  Types of expert bugs to introduce:
+  - Interface/implementation coupling breakage
+  - Invalidated architectural assumptions
+  - Missing hooks/extension points
+  - Broken plugin/extension mechanisms
+  - Inefficient algorithms that appear correct
+  - Security holes from trust boundary violations
+  - Resource exhaustion from design oversights
+  - Semantic breaks in DSL/API behavior
+
+  IMPORTANT RULES:
+  1. Bug stems from DESIGN decisions, not implementation mistakes
+  2. Fix requires REFACTORING, not just line changes
+  3. Bug affects the SYSTEM as a whole, not just one component
+  4. May require changing multiple interfaces/contracts
+  5. Root cause analysis spans multiple abstraction layers
+
+instance: |-
+  Introduce an EXPERT complexity architectural bug in this system.
+
+  The bug should violate ARCHITECTURAL INVARIANTS or API CONTRACTS.
+
+  ```python
+  {file_src_code}
+
+  System architecture context:
+  {related_files}
+  ```
+
+  Create a bug that:
+  1. Represents a DESIGN-LEVEL flaw, not just a coding error
+  2. Breaks implicit contracts between system components
+  3. Would require API changes or architectural refactoring to fix
+  4. Might not manifest immediately but causes issues at scale
+  5. Requires understanding the system's philosophy/design goals
+
+  Format your output as:
+
+  Explanation: <architectural flaw and its systemic impact>
+
+  ```python
+  {func_to_write}
+  ```
