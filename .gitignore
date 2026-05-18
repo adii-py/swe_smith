@@ -2,13 +2,17 @@
 .env
 .DS_Store
 .api_key
+*.json
+*.log
 
 # Folders
 .claude/
 hidden/
 logs/
+mirror_tmps/
 notebooks/
 repos/
+tmp_*/
 
 # General python
 
