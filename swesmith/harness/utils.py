@@ -141,6 +141,16 @@ def run_patch_in_container(
 
         # Start docker container
         rp.pull_image()
+
+        # Configure shared volume for Rust projects
+        volumes = {}
+        if hasattr(rp, 'repo') and 'hyperswitch' in rp.repo.lower():
+            # Mount shared target volume for Hyperswitch at /testbed/target
+            volumes['swesmith-target-juspay-hyperswitch'] = {
+                'bind': '/testbed/target',
+                'mode': 'rw'
+            }
+
         container = client.containers.create(
             image=rp.image_name,
             name=container_name,
@@ -149,6 +159,7 @@ def run_patch_in_container(
             command="tail -f /dev/null",
             platform=getattr(rp, 'pltf', 'linux/x86_64'),
             mem_limit="10g",
+            volumes=volumes,
         )
         container.start()
 
@@ -249,12 +260,17 @@ def run_patch_in_container(
         # Copy eval script to container
         eval_file = Path(log_dir / "eval.sh")
         test_command, _ = rp.get_test_cmd(instance, f2p_only=f2p_only)
+        # Use shared Docker volume mount for Rust target dir (see manage_shared_volumes.py)
+        target_env = ""
+        if hasattr(rp, "repo") and "hyperswitch" in rp.repo.lower():
+            target_env = "export CARGO_TARGET_DIR=/testbed/target\n"
         eval_file.write_text(
             "\n".join(
                 [
                     "#!/bin/bash",
                     "set -uxo pipefail",
                     f"cd {DOCKER_WORKDIR}",
+                    target_env,
                     f": '{TEST_OUTPUT_START}'",
                     test_command,
                     f": '{TEST_OUTPUT_END}'",

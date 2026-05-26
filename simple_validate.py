@@ -1,173 +1,86 @@
 #!/usr/bin/env python3
-"""
-Simple validation script for vLLM bugs.
-Applies bug patch and runs tests to check if they fail.
-"""
+"""Simple validation script for the generated bug."""
 
-import json
 import subprocess
 import tempfile
-import os
+import shutil
 from pathlib import Path
 
-DATASET_FILE = "vllm_lm_unified_bugs_swebench_ready.json"
-VLLM_REPO = "./tmp_d6b73da0/vllm-project__vllm.3e1ad443"
+REPO_PATH = Path("/Users/aditya.singh.001/Desktop/hyperswitch")
+BUG_PATCH = Path("/Users/aditya.singh.001/Desktop/SWE-smith/logs/bug_gen/hyperswitch/new_bug/bug__patch_fd3784c0.diff")
+TEST_PATCH = Path("/Users/aditya.singh.001/Desktop/SWE-smith/test_patch_fixed.diff")
 
-def run_command(cmd, cwd=None, capture=True, timeout=120):
-    """Run a shell command."""
+def run(cmd, cwd=None, timeout=300):
+    """Run a command and return success/failure."""
     try:
         result = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=cwd or VLLM_REPO,
-            capture_output=capture,
-            text=True,
-            timeout=timeout
+            cmd, shell=True, cwd=cwd, capture_output=True, text=True, timeout=timeout
         )
-        return result.returncode, result.stdout, result.stderr
+        return result.returncode == 0, result.stdout, result.stderr
     except subprocess.TimeoutExpired:
-        return -1, "", "Timeout"
-    except Exception as e:
-        return -1, "", str(e)
-
-def validate_instance(instance, idx):
-    """Validate a single instance."""
-    instance_id = instance["instance_id"]
-    func_name = instance["tags"]["function_name"]
-
-    print(f"\n{'='*70}")
-    print(f"[{idx}] Validating: {func_name}")
-    print(f"    Instance: {instance_id}")
-    print('='*70)
-
-    # Get bug patch
-    bug_patch = instance.get("bug_patch") or instance.get("patch", "")
-    if not bug_patch:
-        print("❌ No bug patch found")
-        return {"status": "error", "reason": "no_bug_patch"}
-
-    f2p_tests = instance.get("FAIL_TO_PASS", [])
-    p2p_tests = instance.get("PASS_TO_PASS", [])
-
-    print(f"   F2P tests: {len(f2p_tests)}")
-    print(f"   P2P tests: {len(p2p_tests)}")
-
-    # Reset repo
-    print("\n📋 Resetting repository...")
-    run_command("git checkout -- . && git clean -fd", timeout=30)
-
-    # Apply bug patch
-    print("📋 Applying bug patch...")
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as f:
-        f.write(bug_patch)
-        patch_file = f.name
-
-    try:
-        code, _, stderr = run_command(f"git apply {patch_file}", timeout=30)
-        if code != 0:
-            print(f"❌ Failed to apply bug patch: {stderr[:200]}")
-            return {"status": "error", "reason": "patch_apply_failed"}
-        print("✅ Bug patch applied")
-    finally:
-        os.unlink(patch_file)
-
-    # Run F2P tests
-    f2p_results = []
-    f2p_passed = 0
-    f2p_failed = 0
-
-    print(f"\n📋 Running {len(f2p_tests)} F2P tests (should FAIL with bug)...")
-    for test in f2p_tests[:3]:  # Limit to first 3 for speed
-        test_path = test.split('::')[0]
-        code, stdout, stderr = run_command(f"python -m pytest {test} -x --tb=no -q 2>&1", timeout=60)
-        output = stdout + stderr
-
-        if 'passed' in output.lower() and 'failed' not in output.lower():
-            f2p_passed += 1
-            f2p_results.append({"test": test, "result": "PASSED"})
-            print(f"   ⚠️  {test} PASSED (unexpected - test should fail with bug)")
-        elif 'failed' in output.lower():
-            f2p_failed += 1
-            f2p_results.append({"test": test, "result": "FAILED"})
-            print(f"   ✅ {test} FAILED (expected)")
-        elif 'error' in output.lower():
-            f2p_results.append({"test": test, "result": "ERROR"})
-            print(f"   ⚠️  {test} ERROR")
-        else:
-            f2p_results.append({"test": test, "result": "UNKNOWN"})
-            print(f"   ❓ {test} UNKNOWN")
-
-    # Reset repo
-    run_command("git checkout -- . && git clean -fd", timeout=30)
-
-    # Determine status
-    if f2p_failed > 0:
-        status = "valid"
-        print(f"\n✅ VALID: {f2p_failed}/{len(f2p_tests[:3])} F2P tests failed as expected")
-    elif f2p_passed == len(f2p_tests[:3]):
-        status = "0_f2p"
-        print(f"\n❌ 0_F2P: All F2P tests passed (bug not detected)")
-    else:
-        status = "unclear"
-        print(f"\n⚠️  UNCLEAR: Could not determine F2P status")
-
-    return {
-        "status": status,
-        "instance_id": instance_id,
-        "f2p_failed": f2p_failed,
-        "f2p_passed": f2p_passed,
-        "f2p_total": len(f2p_tests[:3]),
-        "results": f2p_results
-    }
+        return False, "", "Timeout"
 
 def main():
-    print("="*70)
-    print("SIMPLE VALIDATION FOR VLLM BUGS")
-    print("="*70)
-
-    if not os.path.exists(DATASET_FILE):
-        print(f"❌ Dataset not found: {DATASET_FILE}")
-        return
-
-    if not os.path.exists(VLLM_REPO):
-        print(f"❌ Repo not found: {VLLM_REPO}")
-        return
-
-    with open(DATASET_FILE) as f:
-        instances = json.load(f)
-
-    print(f"\nFound {len(instances)} instances to validate")
-    print(f"Repository: {VLLM_REPO}")
-
-    results = []
-    valid_count = 0
-    f2p_zero_count = 0
-    error_count = 0
-
-    for i, instance in enumerate(instances, 1):
-        result = validate_instance(instance, i)
-        results.append(result)
-
-        if result["status"] == "valid":
-            valid_count += 1
-        elif result["status"] == "0_f2p":
-            f2p_zero_count += 1
+    print("=" * 60)
+    print("SIMPLE VALIDATION FOR GENERATED BUG")
+    print("=" * 60)
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        test_repo = tmp_path / "hyperswitch"
+        
+        # 1. Clone repo
+        print("\n[1/5] Cloning repository...")
+        ok, out, err = run(f"git clone --quiet {REPO_PATH} {test_repo}")
+        if not ok:
+            print(f"FAILED: {err}")
+            return
+        print("✓ Repository cloned")
+        
+        # 2. Checkout correct commit
+        print("\n[2/5] Checking out commit fece9bc3...")
+        ok, out, err = run("git fetch origin fece9bc38b9890a1a40912ce2a95037842362e27", cwd=test_repo)
+        ok, out, err = run("git checkout fece9bc38b9890a1a40912ce2a95037842362e27", cwd=test_repo)
+        if not ok:
+            print(f"FAILED: {err}")
+            return
+        print("✓ Commit checked out")
+        
+        # 3. Apply bug patch
+        print("\n[3/5] Applying bug patch...")
+        ok, out, err = run(f"git apply {BUG_PATCH}", cwd=test_repo)
+        if not ok:
+            print(f"FAILED: {err}")
+            return
+        print("✓ Bug patch applied")
+        
+        # 4. Apply test patch
+        print("\n[4/5] Applying test patch...")
+        ok, out, err = run(f"git apply {TEST_PATCH}", cwd=test_repo)
+        if not ok:
+            print(f"FAILED: {err}")
+            return
+        print("✓ Test patch applied")
+        
+        # 5. Run the test
+        print("\n[5/5] Running regression test...")
+        print("(This may take 5-10 minutes for first compilation)")
+        ok, out, err = run(
+            "cargo test --release -p router --lib api_logs_tests::test_timestamp_calculation_uses_division -- --nocapture",
+            cwd=test_repo,
+            timeout=600
+        )
+        
+        print("\n" + "=" * 60)
+        if ok:
+            print("RESULT: ✓ TEST PASSED")
+            print("The regression test successfully caught the bug!")
         else:
-            error_count += 1
-
-    # Summary
-    print("\n" + "="*70)
-    print("VALIDATION SUMMARY")
-    print("="*70)
-    print(f"\nTotal instances: {len(instances)}")
-    print(f"  ✅ Valid (F2P > 0): {valid_count}")
-    print(f"  ❌ 0 F2P: {f2p_zero_count}")
-    print(f"  ⚠️  Errors: {error_count}")
-
-    # Save results
-    with open("validation_results.json", 'w') as f:
-        json.dump(results, f, indent=2)
-    print(f"\n💾 Results saved to: validation_results.json")
+            print("RESULT: ✗ TEST FAILED")
+            print("Expected: Test should detect the timestamp bug")
+            print("\nSTDOUT:", out[-500:] if len(out) > 500 else out)
+            print("\nSTDERR:", err[-500:] if len(err) > 500 else err)
+        print("=" * 60)
 
 if __name__ == "__main__":
     main()

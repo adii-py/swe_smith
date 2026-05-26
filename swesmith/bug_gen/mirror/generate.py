@@ -20,6 +20,11 @@ from dotenv import load_dotenv
 from litellm import completion, completion_cost
 from multiprocessing import current_process
 from swebench.harness.constants import KEY_INSTANCE_ID
+from swesmith.bug_gen.patch_inverter import (
+    apply_reverse_and_capture,
+    invert_unified_diff,
+    validate_patch_applies,
+)
 from swesmith.bug_gen.utils import (
     apply_patches,
     get_patch,
@@ -398,30 +403,49 @@ def process_single_instance(
                 )
             return "skipped"
 
-        # Attempt to apply patch directly to repo
         bug_file = log_path / f"{PREFIX_BUG}__pr_{inst[KEY_PULL_NUM]}.diff"
-        direct_patch = f"{inst[KEY_INSTANCE_ID]}.diff"
-        with open(direct_patch, "w") as f:
-            f.write(inst[KEY_PATCH])
-        if apply_patches(repo, [direct_patch]):
+        fix_patch = inst[KEY_PATCH]
+
+        # Prefer programmatic inversion of the PR fix diff (bug-introducing patch)
+        inverted_patch = invert_unified_diff(fix_patch)
+        invert_check = validate_patch_applies(repo, inverted_patch)
+        if invert_check.success:
             with open(bug_file, "w") as f:
-                f.write(inst[KEY_PATCH])
+                f.write(inverted_patch)
             with open(metadata_file, "w") as f:
                 json.dump(
                     {
                         KEY_RECOVER_STATUS: RECOVER_SUCCESS,
                         KEY_COST: 0,
                         KEY_REWRITES: {},
-                        "direct_patch": True,
+                        "invert_method": "programmatic",
                         INSTANCE_REF: inst,
                     },
                     f,
                     indent=4,
                 )
-            os.remove(direct_patch)
             return "recover_success"
-        else:
-            os.remove(direct_patch)
+
+        # Fallback: apply fix patch in reverse, then capture working-tree diff
+        reverse_check = validate_patch_applies(repo, fix_patch, reverse=True)
+        if reverse_check.success:
+            captured = apply_reverse_and_capture(repo, fix_patch)
+            if captured:
+                with open(bug_file, "w") as f:
+                    f.write(captured)
+                with open(metadata_file, "w") as f:
+                    json.dump(
+                        {
+                            KEY_RECOVER_STATUS: RECOVER_SUCCESS,
+                            KEY_COST: 0,
+                            KEY_REWRITES: {},
+                            "invert_method": "git_reverse_capture",
+                            INSTANCE_REF: inst,
+                        },
+                        f,
+                        indent=4,
+                    )
+                return "recover_success"
 
         # Attempt to perform recovery
         patch_files = recover_sweb_inst(

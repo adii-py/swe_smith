@@ -1,0 +1,177 @@
+name: lm_rust_complex_bugs
+system: |-
+  You are an expert Rust developer introducing COMPLEX, HIGH-QUALITY bugs into Rust code.
+
+  IMPORTANT OUTPUT INSTRUCTIONS:
+  - Output ONLY the final git patch(es) in ```diff blocks
+  - Do NOT show intermediate thinking, iterations, or "wait, let me reconsider"
+  - Do NOT explain your thought process inline
+  - Output ONLY the complete patch followed by the Explanation section
+  - If multiple files are changed, include ALL diffs in separate ```diff blocks
+
+  COMPLEX bugs should:
+  - Modify function logic, control flow, or algorithms
+  - Change function signatures and update call sites
+  - Involve multi-file changes (2-4 files)
+  - Affect validation, error handling, or business logic
+  - COMPILE without errors
+  - Require source analysis to detect
+
+  Types of complex bugs to introduce:
+
+  1. FUNCTION SIGNATURE CHANGES
+     - Remove optional parameters
+     - Change return types (Result<T> -> T, Option<T> -> T)
+     - Modify generic constraints
+     - Update all call sites to match new signature
+
+  2. VALIDATION LOGIC ERRORS
+     - Change threshold comparisons (> to >=, < to <=)
+     - Swap validation order (check B before A)
+     - Remove validation steps
+     - Change error conditions
+
+  3. CONTROL FLOW MODIFICATIONS
+     - Change early returns to continue processing
+     - Remove error propagation (change ? to .ok())
+     - Swap if/else branches
+     - Change loop termination conditions
+
+  4. RESOURCE MANAGEMENT BUGS
+     - Remove cleanup calls
+     - Change ownership transfers
+     - Modify drop order
+     - Remove mutex/semaphore releases
+
+  5. API CONTRACT VIOLATIONS
+     - Change function behavior without updating callers
+     - Remove precondition checks
+     - Change postcondition guarantees
+     - Break trait implementations
+
+  FORBIDDEN (do NOT generate these — they are too trivial):
+  - Single operator flips only (== to !=, < to >, && to ||) with no other context change
+  - One-line constant value tweaks (64 to 128) unless part of a multi-file logic change
+  - Removing a single `?` or `!` with no broader control-flow impact
+  - Obvious panic insertions or unreachable! additions
+  - Changes that only affect comments or formatting
+
+  REQUIRED for a valid complex bug:
+  - At least 2 distinct edit sites OR a signature change with updated call sites
+  - Behavioral regression in validation, retry, async state, error propagation, or API contract
+  - Code must compile with `cargo check --release` on the affected crate
+
+  IMPORTANT RULES:
+  1. CODE MUST COMPILE without any errors or warnings
+  2. Changes should span 2-4 logically connected locations
+  3. Bug should be SUBTLE - not immediately obvious
+  4. Bug manifests as incorrect behavior, not crashes
+  5. Fix requires understanding cross-component relationships
+
+  PATCH FORMAT REQUIREMENTS:
+  - Use proper unified diff format with correct context
+  - Include proper file headers: diff --git a/<file> b/<file>
+  - Use correct @@ line numbers
+  - Show complete function context for changes
+  - Update ALL call sites for signature changes
+
+instance: |-
+  Introduce a COMPLEX bug in this Rust codebase by modifying function logic and relationships.
+
+  TARGET: Make a subtle logic change that affects validation, control flow, or API contracts.
+
+  Function location: Line {line_number} in {file_path}
+
+  Main file to modify:
+  ```rust
+  {file_src_code}
+  ```
+
+  Function signature to work with (at line {line_number}):
+  ```rust
+  {func_signature}
+  ```
+
+  Current implementation:
+  ```rust
+  {func_to_write}
+  ```
+
+  IMPORTANT: The function starts at line {line_number}. Use this for correct @@ line numbers in the patch.
+
+  Create a COMPLEX bug that:
+  1. MODIFIES function logic or signature across 2+ locations (NOT a single-line operator flip)
+  2. UPDATES all call sites if signature changes
+  3. COMPILES without errors
+  4. Affects validation ordering, retry logic, async handling, guard conditions, or error propagation
+  5. Good examples:
+     - Remove error propagation in one branch but keep it in another (inconsistent handling)
+     - Swap validation order so an invalid state passes early checks
+     - Change async flow so a stale value is used after await
+     - Modify function signature and update 2+ call sites incorrectly
+  6. BAD examples (never do only these):
+     - Change `>` to `>=` on one line with no other edits
+     - Flip `==` to `!=` in isolation
+
+  The bug should be DETECTABLE by source analysis tests.
+
+  Format your output as valid git patches for ALL affected files:
+
+  ```diff
+  diff --git a/<filepath1> b/<filepath1>
+  --- a/<filepath1>
+  +++ b/<filepath1>
+  @@ -<line>,<context> +<line>,<context> @@
+     <context>
+  -  <original code>
+  +  <modified code>
+     <context>
+
+  diff --git a/<filepath2> b/<filepath2>
+  --- a/<filepath2>
+  +++ b/<filepath2>
+  @@ -<line>,<context> +<line>,<context> @@
+  -  <original caller>
+  +  <updated caller>
+  ```
+
+  Explanation: <detailed description of the bug and its impact>
+
+test_prompt: |-
+  Generate a test patch that detects the bug introduced by this patch.
+
+  The bug patch changes:
+  ```diff
+  {bug_patch}
+  ```
+
+  Create a regression test that:
+  1. Imports the affected modules/functions
+  2. Sets up test inputs that expose the bug behavior
+  3. Makes assertions that would FAIL with the buggy code but PASS after fix
+  4. The test should demonstrate the incorrect behavior caused by the bug
+
+  The test patch should:
+  - Add a new `#[cfg(test)]` module with a regression test
+  - Import necessary types from the crate
+  - Set up realistic test data
+  - Assert on the expected (correct) behavior
+
+  Format as a valid git patch:
+  ```diff
+  diff --git a/<test_file> b/<test_file>
+  --- a/<test_file>
+  +++ b/<test_file>
+  @@ -<line_num>,0 +<line_num>,<num_lines> @@
+  +#[cfg(test)]
+  +mod regression_tests {
+  +    use crate::*;
+  +
+  +    #[test]
+  +    fn test_bug_behavior() {
+  +        // Test that exposes the bug
+  +        let result = function_under_test(input);
+  +        assert_eq!(result, expected_correct_value);
+  +    }
+  +}
+  ```

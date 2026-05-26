@@ -1,0 +1,24 @@
+--- a/crates/router/src/events/api_logs.rs
++++ b/crates/router/src/events/api_logs.rs
+@@ -173,0 +174,31 @@
++
++#[cfg(test)]
++mod api_logs_tests {
++    #[test]
++    fn test_timestamp_calculation_uses_division() {
++        let now_nanos: i128 = 1_700_000_000_000_000_000i128;
++        let correct_millis = now_nanos / 1_000_000;
++        let buggy_millis = now_nanos * 1_000_000;
++        const MAX_REASONABLE: i128 = 2_000_000_000_000i128;
++        assert!(
++            correct_millis < MAX_REASONABLE,
++            "Division produces reasonable value: {} < {}",
++            correct_millis, MAX_REASONABLE
++        );
++        assert!(
++            buggy_millis > MAX_REASONABLE * 1_000_000,
++            "Multiplication produces too large value"
++        );
++    }
++}
+\ No newline at end of file

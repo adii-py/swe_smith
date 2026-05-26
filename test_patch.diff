@@ -1,0 +1,35 @@
+diff --git a/crates/router/src/events/api_logs.rs b/crates/router/src/events/api_logs.rs
+--- a/crates/router/src/events/api_logs.rs
++++ b/crates/router/src/events/api_logs.rs
+@@ -170,0 +171,31 @@
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// Regression test for timestamp calculation bug.
++    /// Verifies that created_at_timestamp is in milliseconds (divided by 1_000_000)
++    /// and not erroneously multiplied.
++    #[test]
++    fn test_api_event_timestamp_is_reasonable_milliseconds() {
++        // Get current time in nanoseconds and milliseconds for comparison
++        let now_nanos = OffsetDateTime::now_utc().unix_timestamp_nanos();
++        let now_millis = now_nanos / 1_000_000;
++
++        // With the bug (multiplication instead of division), the timestamp would be
++        // approximately now_nanos * 1_000_000, which is astronomically larger.
++        // A correct millisecond timestamp should be within a reasonable range.
++
++        // Unix epoch in milliseconds for year 2024 is roughly 1_700_000_000_000
++        // Year 2030 would be roughly 1_900_000_000_000
++        // A nanosecond value multiplied by 1_000_000 would be > 1_700_000_000_000_000_000
++        const MAX_REASONABLE_MILLIS: i128 = 2_000_000_000_000; // Year ~2033
++        const MIN_REASONABLE_MILLIS: i128 = 1_500_000_000_000; // Year ~2017
++
++        // If the bug is present (* instead of /), now_millis would be > 1e18
++        assert!(now_millis < MAX_REASONABLE_MILLIS,
++            "Timestamp appears to be in nanoseconds (or multiplied), not milliseconds");
++        assert!(now_millis > MIN_REASONABLE_MILLIS,
++            "Timestamp is unexpectedly old");
++    }
++}

@@ -558,72 +558,87 @@ def analyze_bug_patch(instance_id: str, bug_patch: str, repo_path: Optional[str]
 
 
 def extract_import_from_patch(bug_patch: str) -> Tuple[Optional[str], Optional[str], Optional[str], bool]:
-    """Extract what module and attribute to import from the bug patch.
-    Returns: (module_path, class_name, method_name, is_method)
+    """Extract Rust module info from the bug patch.
+    Returns: (module_path, struct_name, function_name, is_method)
+    For Rust: module_path is like 'crate::router::core', struct_name is the impl block
     """
-    code_files = re.findall(r'diff --git a/([^\s]+\.py)', bug_patch)
+    # Support both Python (.py) and Rust (.rs) files for backward compat
+    code_files = re.findall(r'diff --git a/([^\s]+\.(?:py|rs))', bug_patch)
 
     if not code_files:
         return None, None, None, False
 
-    # Filter to Python files, prefer source files over tests
-    source_files = [f for f in code_files if not f.startswith('test') and not f.endswith('_test.py')]
+    # Filter to source files, exclude tests
+    source_files = [f for f in code_files if '/tests/' not in f and not f.endswith('_test.rs')]
     main_file = source_files[0] if source_files else code_files[0]
 
-    # Convert file path to module path
-    module_path = main_file.replace('/', '.').replace('.py', '')
+    # Convert file path to Rust module path (e.g., crates/router/src/core.rs -> router::core)
+    # or keep Python style for .py files
+    if main_file.endswith('.rs'):
+        parts = main_file.split('/')
+        if len(parts) >= 3 and parts[0] == 'crates':
+            # crates/router/src/core/payments.rs -> router::core::payments
+            crate_name = parts[1]
+            module_parts = parts[3:]  # Skip crates/X/src/
+            module_path = '::'.join([crate_name] + [p.replace('.rs', '') for p in module_parts])
+        else:
+            module_path = main_file.replace('/', '::').replace('.rs', '')
+    else:
+        module_path = main_file.replace('/', '.').replace('.py', '')
 
-    # Look for class definitions in the patch
-    # Classes appear in:
-    # - hunk headers: @@ ... @@ class ClassName:
-    # - context lines:  class ClassName:
-    # - removed lines: -class ClassName:
-    class_pattern = r'(?:^@@.+@@\s+|^[ -]*)class\s+(\w+)'
-    # Functions in removed lines (original code)
-    func_pattern = r'^-[\s]*def\s+(\w+)'
+    # Look for struct/impl definitions in the patch
+    # Structs: pub struct Foo { ... }
+    # Impl blocks: impl Foo { ... }
+    struct_pattern = r'(?:^@@.+@@\s+|^[ -]*)(?:pub\s+)?struct\s+(\w+)'
+    impl_pattern = r'(?:^@@.+@@\s+|^[ -]*)impl\s+<?(\w+)'
+    # Functions in removed lines (original code) - Rust uses 'fn' not 'def'
+    func_pattern_py = r'^-[\s]*def\s+(\w+)'
+    func_pattern_rs = r'^-[\s]*(?:pub\s+)?(?:fn|async fn)\s+(\w+)'
 
-    classes = []
+    structs = []
+    impls = []
     functions = []
-    func_indents = {}  # Track indentation of each function
 
     for line in bug_patch.split('\n'):
-        # Look for class definitions
-        class_match = re.match(class_pattern, line)
-        if class_match:
-            classes.append(class_match.group(1))
+        # Look for struct definitions
+        struct_match = re.search(struct_pattern, line)
+        if struct_match:
+            structs.append(struct_match.group(1))
 
-        # Look for function definitions in removed lines
-        func_match = re.match(func_pattern, line)
-        if func_match:
-            func_name = func_match.group(1)
-            functions.append(func_name)
-            # Calculate indentation
-            stripped = line[1:]  # Remove '-' prefix
-            indent = len(stripped) - len(stripped.lstrip())
-            func_indents[func_name] = indent
+        # Look for impl blocks
+        impl_match = re.search(impl_pattern, line)
+        if impl_match:
+            impls.append(impl_match.group(1))
 
-    # Determine if it's a method
+        # Look for function definitions in removed lines (try Rust first, then Python)
+        for pat in [func_pattern_rs, func_pattern_py]:
+            func_match = re.match(pat, line)
+            if func_match:
+                func_name = func_match.group(1)
+                if func_name not in functions:
+                    functions.append(func_name)
+                break
+
+    # Determine if it's a method (in an impl block)
     is_method = False
-    class_name = None
-    method_name = None
+    struct_name = None
+    function_name = None
 
     if functions:
-        method_name = functions[0]
-        indent = func_indents.get(method_name, 0)
-
-        # If indented 4+ spaces, it's a method
-        if indent >= 4:
+        function_name = functions[0]
+        # In Rust, if we're in an impl block, it's a method
+        if impls:
             is_method = True
+            struct_name = impls[0]
 
-    # Assign class name if we found one and it's a method
-    if is_method and classes:
-        class_name = classes[0]
-    elif classes and not functions:
-        # Class-level change
-        class_name = classes[0]
-        is_method = False
+    # Assign struct name from impl or struct definition
+    if not struct_name:
+        if impls:
+            struct_name = impls[0]
+        elif structs:
+            struct_name = structs[0]
 
-    return module_path, class_name, method_name, is_method
+    return module_path, struct_name, function_name, is_method
 
 
 # =============================================================================
@@ -1012,6 +1027,77 @@ def validate_patched_syntax(file_path: str, patch_content: str) -> Tuple[bool, O
             pass
 
 
+def is_rust_file(analysis: BugAnalysis) -> bool:
+    """Check if the changed files are Rust files."""
+    if not analysis.changed_files:
+        return False
+    return any(f.endswith('.rs') for f in analysis.changed_files)
+
+
+def render_python_template(template: TestTemplate) -> List[str]:
+    """Render TestTemplate as Python code."""
+    lines = ['"""Test for bug detection - auto-generated."""']
+    lines.extend(template.imports)
+    lines.append('')
+    lines.extend(template.setup_code)
+    lines.append('')
+    lines.append(f'def {template.name}():')
+    lines.extend(template.test_body)
+    return lines
+
+
+def render_rust_template(template: TestTemplate) -> List[str]:
+    """Render TestTemplate as Rust code."""
+    # Convert Python-style names to Rust-style
+    # e.g., "test_func_returns_value" stays the same
+    test_name = template.name
+
+    # Convert imports to Rust use statements
+    use_statements = []
+    for imp in template.imports:
+        if imp.startswith("from "):
+            # from crate::module import Thing -> use crate::module::Thing
+            parts = imp.replace("from ", "").split(" import ")
+            if len(parts) == 2:
+                module, items = parts
+                use_statements.append(f"use {module}::{items};")
+        elif imp.startswith("import "):
+            # import module -> use module
+            use_statements.append(f"use {imp.replace('import ', '')};")
+
+    # Convert test body (simple conversions)
+    rust_body = []
+    for line in template.test_body:
+        # Convert Python assertions to Rust
+        if 'assert ' in line and 'is not None' in line:
+            line = line.replace('assert ', 'assert!(').replace(' is not None', '.is_some()') + ';'
+        elif 'assert ' in line and '==' in line:
+            line = line.replace('assert ', 'assert_eq!(') + ';'
+        elif 'assert ' in line and '!=' in line:
+            line = line.replace('assert ', 'assert_ne!(') + ';'
+        elif 'assert ' in line:
+            line = line.replace('assert ', 'assert!(') + ';'
+        # Convert comments
+        line = line.replace('# ', '// ')
+        rust_body.append(line)
+
+    lines = [
+        '/// Test for bug detection - auto-generated.',
+        '#[cfg(test)]',
+        'mod bug_tests {',
+    ]
+    lines.extend([f'    {u}' for u in use_statements])
+    lines.append('')
+    lines.extend([f'    {s}' for s in template.setup_code])
+    lines.append('')
+    lines.append(f'    #[test]')
+    lines.append(f'    fn {test_name}() {{')
+    lines.extend([f'        {b}' for b in rust_body])
+    lines.append('    }')
+    lines.append('}')
+    return lines
+
+
 def generate_targeted_test(
     analysis: BugAnalysis,
     use_llm: bool = False,
@@ -1022,31 +1108,26 @@ def generate_targeted_test(
     """
 
     suffix = analysis.instance_id.split('.')[-1]
+    is_rust = is_rust_file(analysis)
 
     # Try template-based generation first based on bug_type
     if analysis.bug_type != "unknown":
         template = generate_test_from_template(analysis, analysis.bug_type)
         if template:
-            lines = ['"""Test for bug detection - auto-generated."""']
-            lines.extend(template.imports)
-            lines.append('')
-            lines.extend(template.setup_code)
-            lines.append('')
-            lines.append(f'def {template.name}():')
-            lines.extend(template.test_body)
+            if is_rust:
+                lines = render_rust_template(template)
+            else:
+                lines = render_python_template(template)
             return lines, template.fail_to_pass_tests
 
     # Try pattern-based templates
     for pattern in analysis.bug_patterns:
         template = generate_test_from_template(analysis, pattern)
         if template:
-            lines = ['"""Test for bug detection - auto-generated."""']
-            lines.extend(template.imports)
-            lines.append('')
-            lines.extend(template.setup_code)
-            lines.append('')
-            lines.append(f'def {template.name}():')
-            lines.extend(template.test_body)
+            if is_rust:
+                lines = render_rust_template(template)
+            else:
+                lines = render_python_template(template)
             return lines, template.fail_to_pass_tests
 
     # Fall back to LLM if available

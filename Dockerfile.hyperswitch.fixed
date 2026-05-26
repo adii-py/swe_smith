@@ -1,0 +1,15 @@
+# Fixed Docker image for Hyperswitch with redis-rs feature enabled
+FROM swebench/swesmith.arm64.juspay_1776_hyperswitch.fece9bc3:latest
+
+WORKDIR /testbed
+
+# Enable redis-rs feature in storage_impl which analytics depends on
+RUN sed -i 's/redis_interface = { version = "0.1.0", path = "..\/redis_interface", default-features = false }/redis_interface = { version = "0.1.0", path = "..\/redis_interface", default-features = false, features = ["redis-rs"] }/' crates/storage_impl/Cargo.toml
+
+# Also enable in analytics directly
+RUN sed -i 's/storage_impl = { version = "0.1.0", path = "..\/storage_impl", default-features = false }/storage_impl = { version = "0.1.0", path = "..\/storage_impl", default-features = false, features = ["redis-rs"] }/' crates/analytics/Cargo.toml
+
+# Pre-fetch dependencies
+RUN cargo fetch 2>&1 | tail -20 || true
+
+WORKDIR /testbed

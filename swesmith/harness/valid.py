@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import threading
 
 from collections import defaultdict
@@ -18,6 +19,7 @@ from swebench.harness.constants import (
     FAIL_TO_PASS,
     LOG_REPORT,
     LOG_TEST_OUTPUT,
+    PASS_TO_PASS,
 )
 from swebench.harness.docker_build import close_logger
 from tqdm.auto import tqdm
@@ -31,6 +33,39 @@ from swesmith.constants import (
 from swesmith.harness.grading import get_valid_report
 from swesmith.harness.utils import run_patch_in_container, run_threadpool
 from swesmith.profiles import registry
+
+
+def verify_docker_image(image_name: str) -> tuple[bool, str]:
+    """Check that the validation Docker image exists locally."""
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", image_name],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode == 0:
+            return True, "image_ok"
+        return False, (result.stderr or "image not found")[:500]
+    except Exception as e:
+        return False, str(e)
+
+
+def diagnose_instance_patches(instance: dict) -> dict:
+    """Lightweight pre-validation diagnostics for patch fields."""
+    diag = {
+        "has_bug_patch": bool(instance.get(KEY_PATCH, "").strip()),
+        "has_test_patch": bool(instance.get("test_patch", "").strip()),
+        "f2p_count": len(instance.get(FAIL_TO_PASS, [])),
+        "p2p_count": len(instance.get(PASS_TO_PASS, [])),
+    }
+    patch = instance.get(KEY_PATCH, "")
+    if patch:
+        diag["patch_files"] = len(
+            [ln for ln in patch.splitlines() if ln.startswith("diff --git")]
+        )
+        diag["patch_hunks"] = patch.count("@@")
+    return diag
 
 
 def print_report(log_dir: Path) -> None:
@@ -53,7 +88,7 @@ def print_report(log_dir: Path) -> None:
     print(f"- Other: {other}")
 
 
-def run_validation(instance: dict) -> dict:
+def run_validation(instance: dict, phase: str = "full") -> dict:
     """
     Run per-instance validation. Steps are generally:
     1. Run the patch on the instance.
@@ -65,73 +100,121 @@ def run_validation(instance: dict) -> dict:
     """
     instance_id = instance[KEY_INSTANCE_ID]
     rp = registry.get_from_inst(instance)
+    patch_diag = diagnose_instance_patches(instance)
+    image_ok, image_msg = verify_docker_image(rp.image_name)
     valid_folder = LOG_DIR_RUN_VALIDATION / instance["repo"]
-    val_postgold_path = (
-        valid_folder / f"{instance['repo']}{REF_SUFFIX}" / LOG_TEST_OUTPUT
-    )
-    report_path = valid_folder / instance_id / LOG_REPORT
+    inst_dir = valid_folder / instance_id
+    val_clean_path = inst_dir / LOG_TEST_OUTPUT_PRE_GOLD
+    val_buggy_path = inst_dir / LOG_TEST_OUTPUT
+    report_path = inst_dir / LOG_REPORT
+    logger = None
 
-    if rp.min_pregold:
-        # Apply only test_patch in pre-gold so tests exist in gold state
+    if not image_ok:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(report_path, "w") as f:
+            f.write(
+                json.dumps(
+                    {
+                        "validation_error": "docker_image_missing",
+                        "image": rp.image_name,
+                        "message": image_msg,
+                        "patch_diagnostics": patch_diag,
+                    },
+                    indent=4,
+                )
+            )
+        return {"status": "fail"}
+
+    if rp.min_pregold and phase in ("full", "clean", "pregold"):
         test_patch_only = instance.get("test_patch")
         ref_inst_id = f"{instance[KEY_INSTANCE_ID]}{REF_SUFFIX}"
-        logger, timed_out = run_patch_in_container(
-            {**instance, KEY_INSTANCE_ID: ref_inst_id},
-            instance["repo"],
-            LOG_DIR_RUN_VALIDATION,
-            rp.timeout,
-            patch=test_patch_only if test_patch_only else None,
-        )
-        close_logger(logger)
-        if timed_out:
-            logger.info(f"Timed out (pre-gold) for {instance_id}.")
-            report_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(report_path, "w") as f:
-                f.write(
-                    json.dumps({KEY_TIMED_OUT: True, "timeout": rp.timeout}, indent=4)
-                )
+        if not val_clean_path.exists() or phase == "pregold":
+            logger, timed_out = run_patch_in_container(
+                {**instance, KEY_INSTANCE_ID: ref_inst_id},
+                instance["repo"],
+                LOG_DIR_RUN_VALIDATION,
+                rp.timeout,
+                patch=test_patch_only if test_patch_only else None,
+            )
+            close_logger(logger)
+            if timed_out:
+                logger.info(f"Timed out (clean/test-only) for {instance_id}.")
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(report_path, "w") as f:
+                    f.write(
+                        json.dumps(
+                            {KEY_TIMED_OUT: True, "timeout": rp.timeout, "phase": "clean"},
+                            indent=4,
+                        )
+                    )
+                if (valid_folder / ref_inst_id).exists():
+                    shutil.rmtree(valid_folder / ref_inst_id)
+                return {"status": "timeout"}
+
+            inst_dir.mkdir(parents=True, exist_ok=True)
+            ref_test_output = valid_folder / ref_inst_id / LOG_TEST_OUTPUT
+            if ref_test_output.exists():
+                shutil.copy(ref_test_output, val_clean_path)
             if (valid_folder / ref_inst_id).exists():
                 shutil.rmtree(valid_folder / ref_inst_id)
-            return {"status": "timeout"}
+        else:
+            print(f"Skipping clean run for {instance_id} (found {val_clean_path})")
 
-        # Copy pre-gold test output to the post-gold folder and remove the pre-gold folder
-        val_postgold_path = valid_folder / instance_id / LOG_TEST_OUTPUT_PRE_GOLD
-        val_postgold_path.parent.mkdir(parents=True, exist_ok=True)
-        ref_test_output = valid_folder / ref_inst_id / LOG_TEST_OUTPUT
-        if ref_test_output.exists():
-            shutil.copy(ref_test_output, val_postgold_path)
-        if (valid_folder / ref_inst_id).exists():
-            shutil.rmtree(valid_folder / ref_inst_id)
+    if phase in ("full", "buggy", "postgold"):
+        test_patch = instance.get("test_patch")
+        bug_patch = instance[KEY_PATCH]
+        combined_patch = None
+        if test_patch and bug_patch:
+            combined_patch = test_patch + "\n" + bug_patch
+        elif bug_patch:
+            combined_patch = bug_patch
+        elif test_patch:
+            combined_patch = test_patch
 
-    # Apply test patch first (if exists), then bug patch
-    test_patch = instance.get("test_patch")
-    bug_patch = instance[KEY_PATCH]
+        if not val_buggy_path.exists() or phase == "postgold":
+            logger, timed_out = run_patch_in_container(
+                instance,
+                instance["repo"],
+                LOG_DIR_RUN_VALIDATION,
+                rp.timeout,
+                patch=combined_patch,
+            )
+            if timed_out:
+                logger.info(f"Timed out (buggy) for {instance_id}.")
+                with open(report_path, "w") as f:
+                    f.write(
+                        json.dumps(
+                            {KEY_TIMED_OUT: True, "timeout": rp.timeout, "phase": "buggy"},
+                            indent=4,
+                        )
+                    )
+                close_logger(logger)
+                return {"status": "timeout"}
+        else:
+            print(f"Skipping buggy run for {instance_id} (found {val_buggy_path})")
 
-    # Combine patches: test patch first, then bug patch
-    combined_patch = None
-    if test_patch and bug_patch:
-        combined_patch = test_patch + "\n" + bug_patch
-    elif bug_patch:
-        combined_patch = bug_patch
-    elif test_patch:
-        combined_patch = test_patch
-
-    logger, timed_out = run_patch_in_container(
-        instance,
-        instance["repo"],
-        LOG_DIR_RUN_VALIDATION,
-        rp.timeout,
-        patch=combined_patch,
-    )
-
-    if timed_out:
-        logger.info(f"Timed out for {instance_id}.")
+    if phase in ("full", "grade") and val_clean_path.exists() and val_buggy_path.exists():
+        pass
+    elif phase == "grade":
+        report_path.parent.mkdir(parents=True, exist_ok=True)
         with open(report_path, "w") as f:
-            f.write(json.dumps({KEY_TIMED_OUT: True, "timeout": rp.timeout}, indent=4))
-        close_logger(logger)
-        return {"status": "timeout"}
+            f.write(
+                json.dumps(
+                    {
+                        "validation_error": "missing_test_outputs",
+                        "clean_log": str(val_clean_path),
+                        "buggy_log": str(val_buggy_path),
+                    },
+                    indent=4,
+                )
+            )
+        return {"status": "fail"}
 
-    val_pregold_path = valid_folder / instance_id / LOG_TEST_OUTPUT
+    if phase in ("clean", "pregold", "buggy", "postgold"):
+        return {"status": "phase_done"}
+
+    val_pregold_path = val_buggy_path
+    val_postgold_path = val_clean_path
     if not val_pregold_path.exists():
         logger.info(f"Pre-gold for {instance_id} failed to run. Exiting early.")
         with open(report_path, "w") as f:
@@ -140,7 +223,8 @@ def run_validation(instance: dict) -> dict:
                     {KEY_TIMED_OUT: True, "missing_pregold_output": True}, indent=4
                 )
             )
-        close_logger(logger)
+        if logger is not None:
+            close_logger(logger)
         return {"status": "fail"}
 
     # Get report from test output
@@ -150,14 +234,16 @@ def run_validation(instance: dict) -> dict:
         val_postgold_path=val_postgold_path,
         instance=instance,
     )
+    report["patch_diagnostics"] = patch_diag
+    report["docker_image"] = rp.image_name
     logger.info(f"Report: {json.dumps(report)}")
 
     # Write report to report.json
     with open(report_path, "w") as f:
         f.write(json.dumps(report, indent=4))
 
-    # Return result based on the report
-    close_logger(logger)
+    if logger is not None:
+        close_logger(logger)
     if len(report.get(FAIL_TO_PASS, [])) == 0:
         return {"status": "0_f2p"}
     else:
@@ -168,6 +254,7 @@ def main(
     bug_patches: str,
     workers: int,
     redo_existing: bool = False,
+    phase: str = "full",
 ) -> None:
     # Bug patch should be a dict that looks like this:
     # {
@@ -255,7 +342,7 @@ def main(
     # Create a wrapper function for threadpool that updates progress bar
     def run_validation_with_progress(*args):
         instance = args[0] if args else {}
-        result = run_validation(instance)
+        result = run_validation(instance, phase=phase)
         with lock:
             stats[result["status"]] += 1
             pbar.set_postfix(stats)
@@ -287,6 +374,13 @@ if __name__ == "__main__":
         "--redo_existing",
         action="store_true",
         help="Redo completed validation instances.",
+    )
+    parser.add_argument(
+        "--phase",
+        type=str,
+        default="full",
+        choices=["full", "clean", "pregold", "buggy", "postgold", "grade"],
+        help="Validation phase: full (default), clean/pregold (test patch only), buggy/postgold (test+bug), grade (compare saved logs).",
     )
     args = parser.parse_args()
     main(**vars(args))

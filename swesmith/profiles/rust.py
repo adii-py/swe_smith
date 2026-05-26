@@ -567,13 +567,19 @@ class HyperswitchFece9bc3(RustProfile):
     Hyperswitch is an open source payment switch that enables businesses
     to connect with multiple payment processors and route transactions.
     """
+
     owner: str = "juspay"
     repo: str = "hyperswitch"
     commit: str = "fece9bc38b9890a1a40912ce2a95037842362e27"
-    # Target common_utils and hyperswitch_connectors to test both PR bugs
+    # Target all major packages to support shared reference validation
     # Use CARGO_BUILD_JOBS=1 to limit memory usage during compilation
-    test_cmd: str = "CARGO_BUILD_JOBS=1 cargo test -p common_utils -p hyperswitch_connectors --no-fail-fast -- --nocapture"
-    timeout: int = 1800
+    # Run only unit tests (--lib), skip tests requiring external deps (redis, postgres)
+    # Use --release mode to avoid linker memory issues and speed up compilation
+    # lld linker is faster and uses less memory than default linker
+    # Use --all-features to ensure all feature-gated code compiles
+    test_cmd: str = "apt-get update && apt-get install -y lld clang && RUSTFLAGS='-C linker=clang -C link-arg=-fuse-ld=lld' CARGO_BUILD_JOBS=1 cargo test --release -p common_utils -p hyperswitch_connectors -p router -p payment_methods -p analytics -p connector_configs --lib --all-features --no-fail-fast -- --nocapture --skip redis --skip postgres --skip db --skip database --skip integration"
+    timeout: int = 10800  # 3 hours for initial compilation + tests
+    timeout_ref: int = 3600  # 1 hour for reference tests
     min_pregold: bool = True
 
     @property
@@ -582,8 +588,8 @@ class HyperswitchFece9bc3(RustProfile):
 ARG DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
 
-# Install system dependencies including protobuf-compiler for grpc builds
-RUN apt update && apt install -y wget git build-essential pkg-config libssl-dev libpq-dev protobuf-compiler \
+# Install system dependencies including protobuf-compiler and lld for grpc builds
+RUN apt update && apt install -y wget git build-essential pkg-config libssl-dev libpq-dev protobuf-compiler lld \
 && rm -rf /var/lib/apt/lists/*
 
 # Clone repository and checkout commit

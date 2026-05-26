@@ -1,0 +1,103 @@
+name: lm_rust_simple_bugs
+system: |-
+  You are an expert Rust developer introducing SIMPLE, HIGH-QUALITY bugs into Rust code.
+
+  SIMPLE bugs should be:
+  - Single line changes (constant values, comparison operators, return values)
+  - Compile without errors
+  - Easy to understand but require source analysis to detect
+  - Affect validation logic, limits, thresholds, or configuration
+
+  Types of simple bugs to introduce:
+  1. CONSTANT VALUE CHANGES (e.g., MAX_LEN 64 → 128)
+  2. COMPARISON OPERATOR FLIPS (e.g., > to >=, == to !=)
+  3. THRESHOLD MODIFICATIONS (e.g., timeout 30s → 60s)
+  4. DEFAULT VALUE CHANGES (e.g., default retries 3 → 5)
+  5. LIMIT MODIFICATIONS (e.g., max_items 100 → 200)
+
+  IMPORTANT RULES:
+  1. CODE MUST COMPILE without any errors
+  2. The bug should be a SINGLE LINE CHANGE when possible
+  3. Changes should be in const declarations or simple comparisons
+  4. The bug should be DETECTABLE by source analysis tests (include_str!)
+  5. The bug should affect VALIDATION LOGIC or CONSTRAINTS
+
+  PATCH FORMAT REQUIREMENTS:
+  - Use proper unified diff format
+  - Include 3 lines of context before and after the change
+  - Use correct line numbers in the @@ header
+  - Start with: diff --git a/<file> b/<file>
+  - Additions start with '+', deletions start with '-'
+
+instance: |-
+  Introduce a SIMPLE bug in this Rust code by changing a constant value or comparison.
+
+  TARGET: Change a constant value, threshold, or comparison operator that affects validation logic.
+
+  Original code:
+  ```rust
+  {file_src_code}
+  ```
+
+  Extracted entity to modify:
+  ```rust
+  {func_to_write}
+  ```
+
+  Create a bug that:
+  1. Is a SINGLE LINE CHANGE (constant value or comparison operator)
+  2. COMPILES without errors
+  3. Affects validation logic, limits, or constraints
+  4. Would be caught by source analysis tests checking for specific values
+  5. Examples:
+     - Change `const MAX_SIZE: usize = 64;` to `const MAX_SIZE: usize = 128;`
+     - Change `if len > 100` to `if len > 200`
+     - Change `timeout: Duration::from_secs(30)` to `timeout: Duration::from_secs(60)`
+
+  Format your output as a valid git patch:
+
+  ```diff
+  diff --git a/<filepath> b/<filepath>
+  --- a/<filepath>
+  +++ b/<filepath>
+  @@ -<line_num>,<context> +<line_num>,<context> @@
+     <context lines>
+  -  <original line>
+  +  <modified line>
+     <context lines>
+  ```
+
+  Explanation: <brief description of the bug>
+
+test_prompt: |-
+  Generate a test patch that detects the bug by checking the original value exists.
+
+  The bug patch changes:
+  ```diff
+  {bug_patch}
+  ```
+
+  Create a test that:
+  1. Uses `include_str!` to check the source code contains the original value
+  2. OR uses direct constant comparison
+  3. Will FAIL when the bug is present
+  4. Will PASS after the fix
+
+  The test should be added to an existing test module or create a new one.
+
+  Format as a git patch adding the test:
+
+  ```diff
+  diff --git a/<test_filepath> b/<test_filepath>
+  --- a/<test_filepath>
+  +++ b/<test_filepath>
+  @@ -<line_num>,0 +<line_num>,<num_lines> @@
+  +#[cfg(test)]
+  +mod regression_tests {
+  +    #[test]
+  +    fn test_original_value_present() {
+  +        // Check the original value exists
+  +        assert_eq!(crate::CONST_NAME, expected_value);
+  +    }
+  +}
+  ```

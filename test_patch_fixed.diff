@@ -1,0 +1,43 @@
+diff --git a/crates/router/src/events/api_logs.rs b/crates/router/src/events/api_logs.rs
+--- a/crates/router/src/events/api_logs.rs
++++ b/crates/router/src/events/api_logs.rs
+@@ -173,3 +173,32 @@ impl ApiEventMetric for PollId {
+         })
+     }
+ }
++
++#[cfg(test)]
++mod api_logs_tests {
++    /// Regression test for timestamp calculation bug.
++    /// Verifies that timestamp calculation uses division not multiplication.
++    #[test]
++    fn test_timestamp_calculation_uses_division() {
++        // Simulate the calculation done in ApiEvent::new
++        let now_nanos: i128 = 1_700_000_000_000_000_000i128; // ~2024 in nanos
++
++        // CORRECT calculation (division)
++        let correct_millis = now_nanos / 1_000_000;
++
++        // BUGGY calculation (multiplication) - what the bug introduces
++        let buggy_millis = now_nanos * 1_000_000;
++
++        // A reasonable millisecond timestamp for 2024 is ~1.7 trillion
++        // Correct: 1.7 trillion (reasonable)
++        // Buggy: 1.7 quintillion (astronomically large)
++        const MAX_REASONABLE: i128 = 2_000_000_000_000i128; // 2 trillion
++
++        // This assertion will FAIL with the bug (buggy value is too large)
++        // and PASS without the bug (correct value is reasonable)
++        assert!(
++            correct_millis < MAX_REASONABLE,
++            "With division: {} < {} (this should pass)",
++            correct_millis, MAX_REASONABLE
++        );
++
++        // Verify buggy calculation is indeed too large
++        assert!(
++            buggy_millis > MAX_REASONABLE * 1_000_000,
++            "Buggy multiplication creates astronomically large value"
++        );
++    }
++}

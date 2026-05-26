@@ -15,6 +15,9 @@ Usage:
     # Remove shared volume (destroys compiled artifacts)
     python scripts/manage_shared_volumes.py remove juspay/hyperswitch
 
+    # Remove old volume, create fresh (fixes OOM from huge target cache)
+    python scripts/manage_shared_volumes.py recreate juspay/hyperswitch
+
     # Show status of all shared volumes
     python scripts/manage_shared_volumes.py status
 """
@@ -52,17 +55,79 @@ def create_volume(repo_name: str):
     print(result.stdout)
 
 
-def remove_volume(repo_name: str):
+def remove_volume(repo_name: str, force: bool = False):
     """Remove a shared Docker volume."""
     client = docker.from_env()
     volume_name = get_volume_name(repo_name)
 
     try:
         volume = client.volumes.get(volume_name)
-        volume.remove()
+        if force:
+            _stop_containers_using_volume(volume_name)
+        volume.remove(force=force)
         print(f"Removed shared volume: {volume_name}")
     except docker.errors.NotFound:
         print(f"Volume does not exist: {volume_name}")
+    except docker.errors.APIError as e:
+        print(f"Failed to remove {volume_name}: {e}")
+        print("Run: python scripts/manage_shared_volumes.py recreate juspay/hyperswitch")
+
+
+def _stop_containers_using_volume(volume_name: str) -> None:
+    """Stop and remove containers that mount the given volume."""
+    result = subprocess.run(
+        ["docker", "ps", "-aq", "--filter", f"volume={volume_name}"],
+        capture_output=True,
+        text=True,
+    )
+    ids = [x for x in result.stdout.split() if x.strip()]
+    if not ids:
+        return
+    print(f"Stopping {len(ids)} container(s) using {volume_name}...")
+    subprocess.run(["docker", "rm", "-f", *ids], check=False)
+
+
+def recreate_volume(repo_name: str) -> None:
+    """Remove old target volume (if any) and create a fresh empty one."""
+    client = docker.from_env()
+    volume_name = get_volume_name(repo_name)
+    _stop_containers_using_volume(volume_name)
+    swesmith_ids = [
+        x
+        for x in subprocess.run(
+            ["docker", "ps", "-aq", "--filter", "name=swesmith"],
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+        if x.strip()
+    ]
+    if swesmith_ids:
+        print(f"Removing {len(swesmith_ids)} swesmith container(s)...")
+        subprocess.run(["docker", "rm", "-f", *swesmith_ids], check=False)
+
+    try:
+        client.volumes.get(volume_name)
+        print(f"Removing existing volume: {volume_name}")
+        client.volumes.get(volume_name).remove(force=True)
+    except docker.errors.NotFound:
+        print(f"No existing volume: {volume_name}")
+
+    client.volumes.create(volume_name)
+    print(f"Created fresh volume: {volume_name}")
+    show_volume_size(volume_name)
+
+
+def show_volume_size(volume_name: str) -> None:
+    result = subprocess.run(
+        ["docker", "volume", "inspect", volume_name, "--format", "{{.Mountpoint}}"],
+        capture_output=True,
+        text=True,
+    )
+    mount = result.stdout.strip()
+    if mount:
+        du = subprocess.run(["du", "-sh", mount], capture_output=True, text=True)
+        if du.returncode == 0:
+            print(f"Volume size on disk: {du.stdout.split()[0]}")
 
 
 def cleanup_target_dirs():
@@ -74,9 +139,11 @@ def cleanup_target_dirs():
     print("=" * 60)
 
     # Locations to check for target directories
+    root = Path(__file__).resolve().parents[1]
     locations = [
         Path("/Users/aditya.singh.001/Desktop/hyperswitch/target"),
-        Path("/Users/aditya.singh.001/Desktop/SWE-smith/juspay__hyperswitch.c6a70eee/target"),
+        root / "juspay__hyperswitch.fece9bc3/target",
+        root / "juspay__hyperswitch.c6a70eee/target",
     ]
 
     total_reclaimed = 0
@@ -181,6 +248,16 @@ def main():
         help="Clean up old target directories to reclaim disk space"
     )
 
+    # Recreate command
+    recreate_parser = subparsers.add_parser(
+        "recreate",
+        help="Remove old volume and create a fresh empty target volume",
+    )
+    recreate_parser.add_argument(
+        "repo",
+        help="Repository name (e.g., juspay/hyperswitch)",
+    )
+
     # Status command
     subparsers.add_parser(
         "status",
@@ -192,7 +269,9 @@ def main():
     if args.command == "create":
         create_volume(args.repo)
     elif args.command == "remove":
-        remove_volume(args.repo)
+        remove_volume(args.repo, force=True)
+    elif args.command == "recreate":
+        recreate_volume(args.repo)
     elif args.command == "cleanup":
         cleanup_target_dirs()
     elif args.command == "status":

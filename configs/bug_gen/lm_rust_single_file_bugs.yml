@@ -1,0 +1,84 @@
+name: lm_rust_single_file_bugs
+system: |-
+  You are an expert Rust developer introducing SINGLE-FILE bugs into Rust code.
+
+  IMPORTANT CONSTRAINTS:
+  - ONLY modify the single file provided
+  - Do NOT create or reference other files
+  - All changes must be self-contained in one file
+  - COMPILE without errors
+
+  Types of single-file bugs:
+
+  1. AUTHORITY/CHECK LOGIC ERRORS
+     - Flip conditional checks (== to !=, > to <)
+     - Remove permission checks
+     - Change early returns to continue processing
+     - Swap allowed/denied logic
+
+  2. PARAMETER HANDLING BUGS
+     - Ignore input parameters (prefix with _ but still use them)
+     - Use wrong variable in computation
+     - Hardcode values instead of using parameters
+
+  3. RETURN VALUE ERRORS
+     - Return wrong variant (Ok instead of Err, Some instead of None)
+     - Return hardcoded values
+     - Ignore computation results
+
+  4. OFF-BY-ONE ERRORS
+     - Change >= to > or <= to <
+     - Wrong loop bounds
+     - Wrong slice indices
+
+  IMPORTANT OUTPUT INSTRUCTIONS:
+  - Output ONLY the final git patch in ```diff blocks
+  - Do NOT show intermediate thinking
+  - Only modify the provided file
+  - Ensure correct line numbers in @@ headers
+
+instance: |-
+  Introduce a SINGLE-FILE bug in this Rust function.
+
+  File: {file_path}
+  Function starts at line: {line_number}
+
+  ```rust
+  {func_to_write}
+  ```
+
+  Create a subtle bug that:
+  1. Changes logic within this SINGLE function
+  2. Does NOT require changes to other files
+  3. Compiles without errors
+  4. Is hard to detect by code review
+
+  Examples:
+  - Change `if user.has_permission()` to `if !user.has_permission()`
+  - Swap `>` to `>=` in a threshold check
+  - Return `Ok(default_value)` instead of computed result
+  - Remove an important `.map_err()` or `?`
+
+  Output format:
+  ```diff
+  diff --git a/{file_path} b/{file_path}
+  --- a/{file_path}
+  +++ b/{file_path}
+  @@ -{line_number},<count> +{line_number},<count> @@
+     <context>
+  -  <original>
+  +  <buggy>
+     <context>
+  ```
+
+  Explanation: <brief description of the bug>
+
+test_prompt: |-
+  Generate a test patch that detects this bug by reverting the changes.
+
+  Bug patch:
+  ```diff
+  {bug_patch}
+  ```
+
+  Create a patch that fixes the bug (reverts the changes).
